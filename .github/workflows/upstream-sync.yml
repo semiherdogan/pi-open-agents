@@ -1,0 +1,345 @@
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/andrea-tomassi/pi-open-agents.git
+  UPSTREAM_BRANCH: main
+  BASE_BRANCH: main
+  SYNC_BRANCH: sync/upstream
+  ISSUE_TITLE: Upstream sync needs a local merge
+
+jobs:
+  # Only git operations here: no upstream code is executed with a write token
+  merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      up_to_date: ${{ steps.merge.outputs.up_to_date }}
+      conflict: ${{ steps.merge.outputs.conflict }}
+      workflows_blocked: ${{ steps.merge.outputs.workflows_blocked }}
+      pushed: ${{ steps.merge.outputs.pushed }}
+      ready: ${{ steps.merge.outputs.ready }}
+      upstream_sha: ${{ steps.merge.outputs.upstream_sha }}
+      upstream_sha_full: ${{ steps.merge.outputs.upstream_sha_full }}
+      conflicts: ${{ steps.merge.outputs.conflicts }}
+      workflow_files: ${{ steps.merge.outputs.workflow_files }}
+      commit_count: ${{ steps.merge.outputs.commit_count }}
+    steps:
+      # SYNC_TOKEN is optional; GITHUB_TOKEN cannot push changes to .github/workflows
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Fetch and merge upstream
+        id: merge
+        env:
+          HAS_SYNC_TOKEN: ${{ secrets.SYNC_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+
+          upstream_sha_full="$(git rev-parse "upstream/$UPSTREAM_BRANCH")"
+
+          # Defaults first; a later write of the same key wins
+          {
+            echo "up_to_date=false"
+            echo "conflict=false"
+            echo "workflows_blocked=false"
+            echo "pushed=false"
+            echo "ready=false"
+            echo "conflicts="
+            echo "workflow_files="
+            echo "upstream_sha=$(git rev-parse --short "$upstream_sha_full")"
+            echo "upstream_sha_full=$upstream_sha_full"
+            echo "commit_count=$(git rev-list --count "origin/$BASE_BRANCH..$upstream_sha_full")"
+          } >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "origin/$BASE_BRANCH"; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream has nothing new for \`$BASE_BRANCH\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+          # [skip ci] keeps push/pull_request workflows from the unreviewed tree from running with repo secrets
+          if ! git merge --no-ff -m "Merge upstream/$UPSTREAM_BRANCH into $BASE_BRANCH [skip ci]" "upstream/$UPSTREAM_BRANCH"; then
+            conflicts="$(git diff --name-only --diff-filter=U | paste -sd, -)"
+            git merge --abort
+            {
+              echo "conflict=true"
+              echo "conflicts=$conflicts"
+            } >> "$GITHUB_OUTPUT"
+            echo "Merge conflict: $conflicts" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          workflow_files="$(git diff --name-only "origin/$BASE_BRANCH" HEAD -- .github/workflows | paste -sd, -)"
+          if [ -n "$workflow_files" ] && [ "$HAS_SYNC_TOKEN" != "true" ]; then
+            {
+              echo "workflows_blocked=true"
+              echo "workflow_files=$workflow_files"
+            } >> "$GITHUB_OUTPUT"
+            echo "Workflow changes need SYNC_TOKEN or a local merge: $workflow_files" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if git rev-parse --verify --quiet "origin/$SYNC_BRANCH" > /dev/null \
+            && git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" "origin/$SYNC_BRANCH" \
+            && git diff --quiet "origin/$SYNC_BRANCH" HEAD; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Remote \`$SYNC_BRANCH\` already matches the merge; push skipped." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git push --force-with-lease origin "HEAD:$SYNC_BRANCH"
+          {
+            echo "pushed=true"
+            echo "ready=true"
+          } >> "$GITHUB_OUTPUT"
+
+  # Runs upstream code, so it gets a read-only token without persisted credentials
+  checks:
+    needs: merge
+    if: needs.merge.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      install_code: ${{ steps.run.outputs.install_code }}
+      test_code: ${{ steps.run.outputs.test_code }}
+      typecheck_code: ${{ steps.run.outputs.typecheck_code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SYNC_BRANCH }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install, test, typecheck
+        id: run
+        run: |
+          set -euo pipefail
+          # No committed lockfile, so npm ci is not possible
+          set +e
+          npm install --no-audit --no-fund > "$RUNNER_TEMP/install.log" 2>&1
+          install_code=$?
+          test_code=skipped
+          typecheck_code=skipped
+          if [ "$install_code" -eq 0 ]; then
+            scripts/test-isolated.sh > "$RUNNER_TEMP/test.log" 2>&1
+            test_code=$?
+            npm run typecheck > "$RUNNER_TEMP/typecheck.log" 2>&1
+            typecheck_code=$?
+          fi
+          set -e
+
+          {
+            echo "install_code=$install_code"
+            echo "test_code=$test_code"
+            echo "typecheck_code=$typecheck_code"
+          } >> "$GITHUB_OUTPUT"
+
+          for name in install test typecheck; do
+            log="$RUNNER_TEMP/$name.log"
+            [ -f "$log" ] || continue
+            {
+              echo "### $name (last 40 lines)"
+              echo '```'
+              tail -n 40 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Fail on non-zero exit codes
+        env:
+          INSTALL_CODE: ${{ steps.run.outputs.install_code }}
+          TEST_CODE: ${{ steps.run.outputs.test_code }}
+          TYPECHECK_CODE: ${{ steps.run.outputs.typecheck_code }}
+        run: |
+          set -euo pipefail
+          if [ "$INSTALL_CODE" != "0" ] || [ "$TEST_CODE" != "0" ] || [ "$TYPECHECK_CODE" != "0" ]; then
+            echo "Checks failed (install=$INSTALL_CODE, test=$TEST_CODE, typecheck=$TYPECHECK_CODE)." >&2
+            exit 1
+          fi
+
+  report:
+    needs: [merge, checks]
+    if: always() && needs.merge.outputs.up_to_date != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Publish PR or issue
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_RESULT: ${{ needs.merge.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          CONFLICT: ${{ needs.merge.outputs.conflict }}
+          BLOCKED: ${{ needs.merge.outputs.workflows_blocked }}
+          READY: ${{ needs.merge.outputs.ready }}
+          UPSTREAM_SHA: ${{ needs.merge.outputs.upstream_sha }}
+          UPSTREAM_SHA_FULL: ${{ needs.merge.outputs.upstream_sha_full }}
+          CONFLICTS: ${{ needs.merge.outputs.conflicts }}
+          WORKFLOW_FILES: ${{ needs.merge.outputs.workflow_files }}
+          COMMIT_COUNT: ${{ needs.merge.outputs.commit_count }}
+          INSTALL_CODE: ${{ needs.checks.outputs.install_code }}
+          TEST_CODE: ${{ needs.checks.outputs.test_code }}
+          TYPECHECK_CODE: ${{ needs.checks.outputs.typecheck_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MERGE_RESULT" != "success" ]; then
+            echo "Merge job ended with result \`$MERGE_RESULT\`: see $RUN_URL" >> "$GITHUB_STEP_SUMMARY"
+            echo "fail=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git remote add upstream "$UPSTREAM_URL"
+          # Fetch the exact commit the merge job used, not the current branch tip
+          git fetch --no-tags upstream "$UPSTREAM_SHA_FULL"
+          commits_file="$RUNNER_TEMP/commits.txt"
+          git log -n 50 --oneline "origin/$BASE_BRANCH..$UPSTREAM_SHA_FULL" > "$commits_file"
+          body_file="$RUNNER_TEMP/body.md"
+
+          bullets() {
+            printf '%s' "$1" | tr ',' '\n' | sed 's/^/- `/; s/$/`/'
+          }
+          status_line() {
+            if [ "$2" = "0" ]; then echo "$1: pass"; else echo "$1: FAIL ($2)"; fi
+          }
+          commit_block() {
+            echo "Upstream commits (showing up to 50 of $COMMIT_COUNT):"
+            echo
+            echo '```'
+            cat "$commits_file"
+            echo '```'
+          }
+
+          if [ "$CONFLICT" = "true" ] || [ "$BLOCKED" = "true" ]; then
+            echo "fail=true" >> "$GITHUB_OUTPUT"
+            {
+              if [ "$CONFLICT" = "true" ]; then
+                echo "The automatic merge of \`upstream/$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) conflicted."
+                echo
+                echo "Conflicted files:"
+                echo
+                bullets "$CONFLICTS"
+              else
+                echo "The merge of \`upstream/$UPSTREAM_BRANCH\` (\`$UPSTREAM_SHA\`) changes workflow files, which GITHUB_TOKEN cannot push. Merge locally or add a \`SYNC_TOKEN\` secret."
+                echo
+                echo "Workflow files:"
+                echo
+                bullets "$WORKFLOW_FILES"
+              fi
+              echo
+              commit_block
+              echo
+              echo "Local recipe:"
+              echo
+              echo '```sh'
+              echo "git fetch upstream"
+              echo "git checkout $BASE_BRANCH"
+              echo "git merge upstream/$UPSTREAM_BRANCH"
+              echo "# resolve conflicts, then:"
+              echo "scripts/test-isolated.sh"
+              echo "npm run typecheck"
+              echo "git push origin $BASE_BRANCH"
+              echo '```'
+              echo
+              echo "Then close this issue. Run: $RUN_URL"
+            } > "$body_file"
+
+            issues_enabled="$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)"
+            if [ "$issues_enabled" != "true" ]; then
+              echo "::notice::Issues are disabled on this repository; the report is in the job summary. Enable Issues (Settings > General > Features) to get it as an issue."
+              {
+                echo "## $ISSUE_TITLE"
+                echo
+                cat "$body_file"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            number="$(gh issue list --state open --limit 100 --json number,title --jq "[.[] | select(.title == \"$ISSUE_TITLE\")][0].number // empty")"
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --body-file "$body_file"
+            else
+              gh issue create --title "$ISSUE_TITLE" --body-file "$body_file"
+            fi
+            exit 0
+          fi
+
+          if [ "$READY" != "true" ]; then
+            echo "No clean merge on the remote branch: see $RUN_URL" >> "$GITHUB_STEP_SUMMARY"
+            echo "fail=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$CHECKS_RESULT" != "success" ] || [ "$INSTALL_CODE" != "0" ] || [ "$TEST_CODE" != "0" ] || [ "$TYPECHECK_CODE" != "0" ]; then
+            echo "fail=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          title="chore: sync upstream ($UPSTREAM_SHA)"
+          {
+            echo "Automated merge of \`upstream/$UPSTREAM_BRANCH\` ($UPSTREAM_URL) into \`$BASE_BRANCH\`."
+            echo
+            commit_block
+            echo
+            echo "### Checks"
+            echo
+            echo "- $(status_line Install "$INSTALL_CODE")"
+            echo "- $(status_line Tests "$TEST_CODE")"
+            echo "- $(status_line Typecheck "$TYPECHECK_CODE")"
+            echo
+            echo "Logs: $RUN_URL"
+          } > "$body_file"
+
+          number="$(gh pr list --head "$SYNC_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "$title" --body-file "$body_file"
+          else
+            gh pr create --head "$SYNC_BRANCH" --base "$BASE_BRANCH" --title "$title" --body-file "$body_file"
+            number="$(gh pr list --head "$SYNC_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          fi
+
+          label_exists="$(gh label list --json name --jq 'any(.[]; .name=="upstream-sync")')"
+          if [ -n "$number" ] && [ "$label_exists" = "true" ]; then
+            gh pr edit "$number" --add-label upstream-sync || true
+          fi
+
+          echo "PR: #$number" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail on conflict, blocked workflows or failed checks
+        if: always() && steps.publish.outputs.fail == 'true'
+        run: |
+          set -euo pipefail
+          echo "Upstream sync needs attention: see the issue or PR and the job summaries." >&2
+          exit 1
