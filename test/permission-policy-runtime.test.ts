@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -108,6 +108,40 @@ test("runtime: warnings are reported once per snapshot content", () => {
 
     writeUser(box, { version: 1 });
     assert.deepEqual(box.runtime.beginRun(box.cwd), []);
+  });
+});
+
+test("runtime: a policy file that disappears keeps its last loaded version", () => {
+  withBox((box) => {
+    const userPath = join(box.agentDir, POLICY_FILE_NAME);
+    writeUser(box, { version: 1, alwaysDeny: { bash: ["curl"] } });
+    assert.deepEqual(box.runtime.beginRun(box.cwd), []);
+
+    unlinkSync(userPath);
+    const warnings = box.runtime.beginRun(box.cwd);
+    assert.deepEqual(warnings, [`${userPath} disappeared; keeping the last loaded policy until pi restarts`]);
+    assert.equal(box.runtime.isActive(box.cwd), true);
+    assert.deepEqual(box.runtime.policyFor(agent, box.cwd)?.bashDeny, ["curl"]);
+    assert.deepEqual(box.runtime.beginRun(box.cwd), [], "reported once");
+
+    writeUser(box, "{ broken");
+    const invalid = box.runtime.beginRun(box.cwd);
+    assert.match(invalid[0] ?? "", /invalid JSON/);
+    assert.ok(box.runtime.policyFor(agent, box.cwd)?.hardRules.some((r) => r.permission === "bash" && r.pattern === "*"), "invalid stays fail-closed");
+
+    unlinkSync(userPath);
+    assert.deepEqual(box.runtime.beginRun(box.cwd), [`${userPath} disappeared; keeping the last loaded policy until pi restarts`]);
+    assert.deepEqual(box.runtime.policyFor(agent, box.cwd)?.bashDeny, ["curl"]);
+  });
+});
+
+test("runtime: a policy file never loaded stays missing", () => {
+  withBox((box) => {
+    writeUser(box, "{ broken");
+    box.runtime.beginRun(box.cwd);
+    unlinkSync(join(box.agentDir, POLICY_FILE_NAME));
+    assert.deepEqual(box.runtime.beginRun(box.cwd), []);
+    assert.equal(box.runtime.isActive(box.cwd), false);
   });
 });
 

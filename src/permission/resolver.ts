@@ -63,6 +63,8 @@ export interface EffectivePolicy {
   denyGitWrite: boolean;
   /** User alwaysDeny.bash, raw for the bash validator; NOT turned into glob rules */
   bashDeny: string[];
+  /** Lexical and canonical agent dir; the bash validator scans inline scripts for them. */
+  agentDirs: string[];
   sources: { user: PolicyFile<UserPolicy>; project: PolicyFile<ProjectPolicy> };
   warnings: string[];
 }
@@ -208,6 +210,7 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
     hardRules,
     denyGitWrite: userPolicy?.alwaysDeny.gitWrite ?? true,
     bashDeny: userPolicy?.alwaysDeny.bash ?? [],
+    agentDirs: [...new Set([path.resolve(agentDir), real(agentDir)])],
     sources: { user, project },
     warnings,
   };

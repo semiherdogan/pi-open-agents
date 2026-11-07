@@ -7,12 +7,15 @@
  * across that key's spellings wins (last-match-wins, inherited rules appended
  * last stay on top), then the keys combine most restrictive first, so a decoy
  * key can never loosen the decision for the key the tool actually uses.
+ * Shell calls are judged per command by bash-validator.ts (argv token-prefix
+ * rules, git and protected-path hard denies) instead of a whole-string glob.
  * Registered after the legacy gate, which stands down while a policy is active.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import type { AgentDefinition, PermissionAction, PermissionRule } from "../types.ts";
+import { validateShellCommand } from "./bash-validator.ts";
 import { matchPermissionKey, toolToPermission } from "./evaluator.ts";
 import { extractToolArg } from "./gate.ts";
 import { POLICY_FILE_STATUS } from "./loader.ts";
@@ -33,6 +36,8 @@ const ACTION = {
 export const SAFE_CATEGORIES: readonly string[] = ["read", "grep", "find", "ls", "subagent", "search_agents"];
 /** Unmatched calls are denied. Any other category asks. */
 export const RISKY_CATEGORIES: readonly string[] = ["bash", "powershell", "shell", "edit", "write"];
+/** Categories whose command is decided by the bash validator. */
+const SHELL_CATEGORIES: readonly string[] = ["bash", "shell", "powershell"];
 /** Tools whose argument is always a path. */
 export const FILE_TOOLS: readonly string[] = ["read", "edit", "write", "ls", "apply_patch"];
 /** Every key a file tool may read its path from; all present ones are judged, `path` first. */
@@ -123,7 +128,7 @@ function candidateGroups(options: PolicyDecisionInput, targets: PathTarget[]): s
 
 // Case-insensitive filesystems cannot canonicalize the case of a missing component,
 // so hard denies ignore case everywhere (only ever stricter).
-function matchesHard(pattern: string, candidate: string): boolean {
+export function matchesHard(pattern: string, candidate: string): boolean {
   return matchPattern(pattern.toLowerCase(), candidate.toLowerCase());
 }
 
@@ -176,6 +181,19 @@ export function decidePolicyCall(options: PolicyDecisionInput): PolicyDecision {
       candidates,
       targets,
     };
+  }
+
+  if (SHELL_CATEGORIES.includes(category)) {
+    const shell = validateShellCommand({
+      command: extractToolArg(toolName, options.input) ?? NO_ARG,
+      category,
+      policy,
+      inherited,
+      cwd: options.cwd,
+      home: options.home,
+      realpath: options.realpath,
+    });
+    return { action: shell.action, category, hard: shell.hard, reason: shell.reason, candidates, targets };
   }
 
   const rules = [...policy.rules, ...inherited];
