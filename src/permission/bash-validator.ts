@@ -133,6 +133,7 @@ const FIND_EXPRESSION_STARTS = new Set(["(", "!", ")", ","]);
 // Built-in protected locations an inline interpreter script must not mention.
 const PROTECTED_MENTIONS = [GIT_DIR, ".pi/", ".opencode", ".agents"];
 
+const NO_COMMAND_REASON = "no command to run";
 const POWERSHELL_REASON = "powershell commands cannot be validated; only a blanket rule can allow them";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -931,9 +932,9 @@ export function validateShellCommand(input: ShellValidationInput): ShellDecision
     if (writes.length > 0) return deny(`this agent cannot change files (${writes.join(", ")})`, false, commands);
   }
 
-  const verdict = judgedCommands
-    .map((judged) => commandVerdict(judged, rules, category, unverifiable))
-    .reduce<Verdict>(stricter, { action: ACTION.allow, reason: `no command to run` });
+  const verdicts = judgedCommands.map((judged) => commandVerdict(judged, rules, category, unverifiable));
+  const verdict: Verdict =
+    verdicts.length > 0 ? verdicts.reduce(stricter) : { action: ACTION.allow, reason: NO_COMMAND_REASON };
   if (verdict.action === ACTION.deny) return deny(verdict.reason, false, commands);
 
   const unique = [...new Set(unverifiable)];

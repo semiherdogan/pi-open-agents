@@ -7,4 +7,5 @@
   - Touch upstream files only with minimal hook calls.
   - Never rename or restructure upstream files.
 - Permission-policy work lives in `src/permission/` (`loader.ts`, `resolver.ts`, more to come) with tests in `test/permission-*.test.ts`.
+- The permission policy design (formats, precedence, delegation, limitations) is documented in `PERMISSIONS.md`.
 - Do not use the em dash character in code, comments, or docs.

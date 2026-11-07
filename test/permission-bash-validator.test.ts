@@ -516,3 +516,15 @@ test(
     assert.match(git?.reason ?? "", /git write operations are disabled \(git push\)/);
   }),
 );
+
+test(
+  "bash validator: an allowed command carries the matched rule, an empty one its own reason",
+  withBox((box) => {
+    const policy = policyFor(box, { bash: { "git status": "allow" } });
+    assert.match(check(box, policy, "git status").reason, /^rule bash "git status"$/);
+    assert.equal(check(box, policy, "   ").reason, "empty command");
+    const comment = check(box, policy, "# nothing to run");
+    assert.equal(comment.action, "allow");
+    assert.equal(comment.reason, "no command to run");
+  }),
+);

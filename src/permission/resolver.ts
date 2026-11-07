@@ -32,7 +32,7 @@ const GLOB_CHARS = /[*?]/;
 const PARENT_DIR = "..";
 const WRITE_CATEGORIES = ["edit", "write"] as const;
 // Blocked when a policy file exists but cannot be validated (fail-closed).
-const RISKY_CATEGORIES = ["bash", "edit", "write"] as const;
+const RISKY_CATEGORIES = ["bash", "shell", "powershell", "edit", "write"] as const;
 // Agent definitions, policy files, project extensions/settings and git metadata:
 // writing any of them is a privilege escalation path.
 export const BUILTIN_PROTECTED_PATHS = [".git", ".git/**", ".pi/**", ".opencode/**", ".agents/**"] as const;
@@ -149,7 +149,7 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
 
   for (const file of [user, project]) {
     if (file.status !== POLICY_FILE_STATUS.invalid) continue;
-    warnings.push(`${file.path}: ${file.error}; bash, edit and write are blocked until it is fixed`);
+    warnings.push(`${file.path}: ${file.error}; bash, shell, powershell, edit and write are blocked until it is fixed`);
     for (const category of RISKY_CATEGORIES) hardRules.push(denyRule(category));
   }
 

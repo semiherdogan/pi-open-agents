@@ -21,6 +21,7 @@ import {
   type ProjectPolicy,
   type UserPolicy,
 } from "../src/permission/loader.ts";
+import { decidePolicyCall } from "../src/permission/policy-gate.ts";
 import { resolvePolicy } from "../src/permission/resolver.ts";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -312,6 +313,25 @@ test("resolver: invalid project file fails closed, user denies still apply", () 
     assert.equal(policy.warnings.length, 1);
     assert.match(policy.warnings[0], /bad thing/);
     assert.equal(evaluate("edit", join(box.home, "secrets", "k"), policy.rules).action, "deny");
+  });
+});
+
+test("resolver: invalid project file hard denies shell and powershell calls", () => {
+  withSandbox((box) => {
+    const policy = resolvePolicy({
+      agent: { ...baseAgent, permission: { bash: "allow", shell: "allow", powershell: "allow" } },
+      cwd: box.cwd,
+      agentDir: box.agentDir,
+      home: box.home,
+      user: userFile({ alwaysDeny: { gitWrite: true, paths: [], tools: [], bash: [] } }),
+      project: { path: "/p/.pi/permissions.json", status: POLICY_FILE_STATUS.invalid, error: "bad thing" },
+    });
+    assert.ok(policy);
+    for (const toolName of ["bash", "shell", "powershell"]) {
+      const decision = decidePolicyCall({ toolName, input: { command: "ls" }, policy, inherited: [], cwd: box.cwd, home: box.home });
+      assert.equal(decision.action, "deny", toolName);
+      assert.equal(decision.hard, true, toolName);
+    }
   });
 });
 

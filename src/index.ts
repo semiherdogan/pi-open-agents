@@ -33,6 +33,7 @@ import { registerPolicyGate } from "./permission/policy-gate.ts";
 import { readPolicySnapshot } from "./permission/policy-snapshot.ts";
 import { createDelegationPlanner } from "./permission/delegation.ts";
 import { registerPermissionAwareness } from "./permission/awareness.ts";
+import { registerPermissionCommands } from "./permission/commands.ts";
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -134,6 +135,12 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
       resolveAgent,
       inheritedRules: () => parentInheritedRules(process.env),
       agents: result.agents,
+    });
+    registerPermissionCommands(pi, {
+      runtime: policyRuntime,
+      resolveAgent,
+      getAgents: () => manager.getAgents(),
+      inheritedRules: () => parentInheritedRules(process.env),
     });
 
     // Subagent child processes are fully configured by the executor via CLI flags

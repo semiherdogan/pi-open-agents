@@ -384,7 +384,7 @@ export interface PermissionAwarenessOptions {
 }
 
 // Mirrors registerSubagentTool's filters: max depth, the env whitelist, then the active agent's allowedAgents.
-function delegateCandidates(options: PermissionAwarenessOptions, active: AgentDefinition | undefined, tools: string[]): AgentDefinition[] {
+export function delegateCandidates(options: PermissionAwarenessOptions, active: AgentDefinition | undefined, tools: string[]): AgentDefinition[] {
   const env = options.env ?? process.env;
   if (isPastMaxDepth(env) || !tools.includes(SUBAGENT_TOOL)) return [];
   const allowed = allowedAgentNames(env);

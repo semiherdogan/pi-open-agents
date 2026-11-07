@@ -127,6 +127,14 @@ export class PolicyRuntime {
     return { self, ceilings: [], inherited: this.inheritedRules, files: { user, project } };
   }
 
+  /** Policy files decisions come from: the parent's snapshot files, else this run's loaded files. */
+  files(cwd: string): PolicySnapshotFiles {
+    const received = this.receivedSnapshot();
+    if (received) return received.files;
+    const { user, project } = this.ensureSnapshot(cwd);
+    return { user, project };
+  }
+
   /** Legacy ancestor rules this process must keep applying after its own rules. */
   inherited(): PermissionRule[] {
     return this.receivedSnapshot()?.inherited ?? this.inheritedRules;
