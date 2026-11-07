@@ -107,8 +107,23 @@ function isTrusted(agent: AgentDefinition, projectTrusted: boolean): boolean {
   return agent.source === GLOBAL_SOURCE || projectTrusted;
 }
 
-function roleRefusal(input: DelegationInput, projectTrusted: boolean, childProjectTrusted: boolean): string | undefined {
-  const { activeAgent, agent } = input;
+export interface DelegationModeInput {
+  activeAgent: AgentDefinition | undefined;
+  agent: AgentDefinition;
+  /** The delegating agent's frontmatter entry for `agent`, if any. */
+  configured: DelegationMode | undefined;
+  projectTrusted: boolean;
+  childProjectTrusted: boolean;
+}
+
+export interface DelegationModeDecision {
+  mode: DelegationMode;
+  /** Why a configured role was refused. */
+  refusal?: string;
+}
+
+function roleRefusal(input: DelegationModeInput): string | undefined {
+  const { activeAgent, agent, projectTrusted, childProjectTrusted } = input;
   if (!activeAgent) return `no delegating agent definition`;
   if (!activeAgent.allowedAgents?.includes(agent.name)) {
     return `"${agent.name}" is not listed in allowedAgents of "${activeAgent.name}"`;
@@ -116,6 +131,44 @@ function roleRefusal(input: DelegationInput, projectTrusted: boolean, childProje
   if (!isTrusted(activeAgent, projectTrusted)) return `"${activeAgent.name}" is a project agent in an untrusted project`;
   if (!isTrusted(agent, projectTrusted && childProjectTrusted)) return `"${agent.name}" is a project agent in an untrusted project`;
   return undefined;
+}
+
+/** The mode a child runs in; shared by the planner and the prompt summary so both agree. */
+export function decideDelegationMode(input: DelegationModeInput): DelegationModeDecision {
+  const mode = input.configured ?? DELEGATION_MODE.restrict;
+  if (mode !== DELEGATION_MODE.role) return { mode };
+  const refusal = roleRefusal(input);
+  return refusal === undefined ? { mode } : { mode: DELEGATION_MODE.restrict, refusal };
+}
+
+/** Modes of `agents` delegated by `activeAgent` in `cwd` with the child's default cwd, as the planner decides them. */
+export function delegationModesFor(
+  runtime: PolicyRuntime,
+  activeAgent: AgentDefinition | undefined,
+  agents: AgentDefinition[],
+  cwd: string,
+  readFile?: (filePath: string) => string,
+): Map<string, DelegationMode> {
+  const modes = new Map<string, DelegationMode>();
+  if (agents.length === 0) return modes;
+  const state = runtime.delegationState(activeAgent, cwd);
+  if (!state) throw new Error(`cannot resolve the permission policy of the delegating agent`);
+  const childDir = path.resolve(process.cwd(), cwd);
+  const child = runtime.childProject(state.files, cwd, childDir);
+  const config = activeAgent ? readDelegationConfig(activeAgent, readFile) : undefined;
+  for (const agent of agents) {
+    const childSelf = runtime.resolveFrom(child.files, agent, childDir, child.root);
+    if (!childSelf) throw new Error(`cannot resolve the permission policy for "${agent.name}"`);
+    const { mode } = decideDelegationMode({
+      activeAgent,
+      agent,
+      configured: config?.modes[agent.name],
+      projectTrusted: state.self.trusted,
+      childProjectTrusted: childSelf.trusted,
+    });
+    modes.set(agent.name, mode);
+  }
+  return modes;
 }
 
 export interface DelegationPlannerOptions {
@@ -142,15 +195,15 @@ export function createDelegationPlanner(options: DelegationPlannerOptions): (inp
 
     const config = activeAgent ? readDelegationConfig(activeAgent, options.readFile) : { modes: {}, warnings: [] };
     const notes = [...config.warnings];
-    let mode: DelegationMode = config.modes[agent.name] ?? DELEGATION_MODE.restrict;
-    if (mode === DELEGATION_MODE.role) {
-      // Project definitions come from the session cwd; a project child must also run in a trusted cwd.
-      const refusal = roleRefusal(input, state.self.trusted, childSelf.trusted);
-      if (refusal !== undefined) {
-        notes.push(`role delegation refused, using ${DELEGATION_MODE.restrict}: ${refusal}`);
-        mode = DELEGATION_MODE.restrict;
-      }
-    }
+    // Project definitions come from the session cwd; a project child must also run in a trusted cwd.
+    const { mode, refusal } = decideDelegationMode({
+      activeAgent,
+      agent,
+      configured: config.modes[agent.name],
+      projectTrusted: state.self.trusted,
+      childProjectTrusted: childSelf.trusted,
+    });
+    if (refusal !== undefined) notes.push(`role delegation refused, using ${DELEGATION_MODE.restrict}: ${refusal}`);
 
     const role = mode === DELEGATION_MODE.role;
     const ceilings = role ? state.ceilings : [...state.ceilings, serializePolicy(state.self)];

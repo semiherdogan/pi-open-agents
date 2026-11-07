@@ -53,6 +53,9 @@ export interface ChildProject {
   root: string;
 }
 
+// A received snapshot never changes during the process.
+const RECEIVED_SIGNATURE = "received";
+
 // `<root>/.pi/permissions.json` -> `<root>`
 function projectRootOf(file: PolicyFile<ProjectPolicy>): string {
   return path.dirname(path.dirname(file.path));
@@ -99,6 +102,12 @@ export class PolicyRuntime {
   /** True when decisions come from a parent's snapshot (legacy inherited rules no longer apply). */
   get fromSnapshot(): boolean {
     return this.received !== undefined;
+  }
+
+  /** Identity of the policy inputs: changes only when a received snapshot or a loaded file's content changes. */
+  get signature(): string | undefined {
+    if (this.received !== undefined) return RECEIVED_SIGNATURE;
+    return this.snapshot?.signature;
   }
 
   /** Policies above this process; every call must also pass each of them. */

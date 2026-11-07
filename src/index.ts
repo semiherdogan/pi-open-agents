@@ -32,6 +32,7 @@ import { PolicyRuntime } from "./permission/policy-runtime.ts";
 import { registerPolicyGate } from "./permission/policy-gate.ts";
 import { readPolicySnapshot } from "./permission/policy-snapshot.ts";
 import { createDelegationPlanner } from "./permission/delegation.ts";
+import { registerPermissionAwareness } from "./permission/awareness.ts";
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -126,6 +127,13 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
       runtime: policyRuntime,
       resolveAgent,
       inheritedRules: () => parentInheritedRules(process.env),
+    });
+    // After upstream's and the gate's before_agent_start handlers: appends the strict-mode permission section last.
+    registerPermissionAwareness(pi, {
+      runtime: policyRuntime,
+      resolveAgent,
+      inheritedRules: () => parentInheritedRules(process.env),
+      agents: result.agents,
     });
 
     // Subagent child processes are fully configured by the executor via CLI flags
