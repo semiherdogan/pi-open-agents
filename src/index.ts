@@ -28,6 +28,8 @@ import { registerAgentTools } from "./tui/tools.ts";
 import { registerSubagentTool } from "./subagent/tool.ts";
 import { allowedAgentNames, isSubagentProcess, parentInheritedRules } from "./subagent/env.ts";
 import { registerPermissionGate } from "./permission/gate.ts";
+import { PolicyRuntime } from "./permission/policy-runtime.ts";
+import { registerPolicyGate } from "./permission/policy-gate.ts";
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ function loadSettings(cwd: string): Settings {
 
 export default function piOpenAgents(pi: ExtensionAPI): void {
   const manager = new AgentManager();
+  const policyRuntime = new PolicyRuntime({ agentDir: getAgentDir() });
 
   // ── Register CLI flag immediately (before session_start) ──────────────────
   // Extension flags are parsed during startup, before session_start fires.
@@ -103,15 +106,22 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
 
     // Runtime permission gate: enforces allow/deny/ask on every tool call
     // (argument-aware patterns + interactive ask; fail-closed in subagents).
+    const resolveAgent = (): AgentDefinition | undefined => {
+      // In subagent children the active agent is not applied (the executor
+      // configures them via CLI flags), so resolve by the env var it passes.
+      const childName = process.env.PI_OPEN_AGENTS_NAME;
+      if (childName) return manager.getAgent(childName);
+      return manager.getActive();
+    };
+    // The legacy gate stands down while a policy file exists; the policy gate owns those calls.
     registerPermissionGate(pi, {
-      resolveAgent: () => {
-        // In subagent children the active agent is not applied (the executor
-        // configures them via CLI flags) — resolve by the env var it passes.
-        const childName = process.env.PI_OPEN_AGENTS_NAME;
-        if (childName) return manager.getAgent(childName);
-        return manager.getActive();
-      },
+      resolveAgent: () => (policyRuntime.isActive(ctx.cwd) ? undefined : resolveAgent()),
       // #8: restrictive rules handed down by the delegating parent (env JSON).
+      inheritedRules: () => (policyRuntime.isActive(ctx.cwd) ? [] : parentInheritedRules(process.env)),
+    });
+    registerPolicyGate(pi, {
+      runtime: policyRuntime,
+      resolveAgent,
       inheritedRules: () => parentInheritedRules(process.env),
     });
 
