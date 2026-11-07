@@ -36,6 +36,9 @@ const RISKY_CATEGORIES = ["bash", "edit", "write"] as const;
 // Agent definitions, policy files, project extensions/settings and git metadata:
 // writing any of them is a privilege escalation path.
 export const BUILTIN_PROTECTED_PATHS = [".git", ".git/**", ".pi/**", ".opencode/**", ".agents/**"] as const;
+// The same locations in any directory, so no project's config can be authored from outside it.
+// Not anchored: they have no literal prefix and must stay out of the bash ancestor check.
+export const ANYWHERE_PROTECTED_PATHS = ["**/.git", "**/.git/**", "**/.pi/**", "**/.opencode/**", "**/.agents/**"] as const;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +53,10 @@ export interface ResolvePolicyOptions {
   home?: string;
   /** Default: realpathSync.native on the longest existing ancestor, missing tail re-appended */
   realpath?: (p: string) => string;
+  /** Directory trust is computed for; default cwd */
+  trustRoot?: string;
+  /** More directories relative protected patterns are anchored to, besides cwd */
+  anchorRoots?: string[];
 }
 
 export interface EffectivePolicy {
@@ -104,7 +111,7 @@ function expandHome(entry: string, home: string): string {
   return entry.startsWith(HOME_PREFIX) ? path.join(home, entry.slice(HOME_PREFIX.length)) : entry;
 }
 
-function isInside(root: string, target: string): boolean {
+export function isInside(root: string, target: string): boolean {
   const rel = path.relative(root, target);
   return (
     rel === "" ||
@@ -149,7 +156,7 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
   // M2 checks both path.resolve(cwd, arg) (lexical) and the realpath'd argument against these rules.
   // A nested symlink inside a protected dir targeted directly by its real path is not covered
   // (OS-level isolation territory).
-  const lexicalCwd = path.resolve(cwd);
+  const roots = [cwd, ...(options.anchorRoots ?? [])];
   const lexicalHome = path.resolve(options.home ?? homedir());
   const protectedPatterns = [
     ...BUILTIN_PROTECTED_PATHS,
@@ -157,16 +164,18 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
     `${real(agentDir)}${ANY_DESCENDANT}`,
     ...(userPolicy?.alwaysDeny.paths ?? []),
   ];
-  const hardPatterns = new Set<string>();
+  const hardPatterns = new Set<string>(ANYWHERE_PROTECTED_PATHS);
   for (const pattern of protectedPatterns) {
     const anchorTo = (root: string, homeRoot: string): string => {
       const expanded = expandHome(pattern, homeRoot);
       return path.isAbsolute(expanded) ? expanded : path.join(root, expanded);
     };
-    const anchored = anchorTo(realCwd, home);
-    hardPatterns.add(anchorTo(lexicalCwd, lexicalHome));
-    hardPatterns.add(anchored);
-    hardPatterns.add(canonicalizePattern(anchored, real));
+    for (const root of roots) {
+      const anchored = anchorTo(real(root), home);
+      hardPatterns.add(anchorTo(path.resolve(root), lexicalHome));
+      hardPatterns.add(anchored);
+      hardPatterns.add(canonicalizePattern(anchored, real));
+    }
   }
   for (const hardPattern of hardPatterns) {
     for (const category of WRITE_CATEGORIES) {
@@ -178,8 +187,9 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
     hardRules.push(denyRule(toolToPermission(tool)));
   }
 
+  const realTrustRoot = options.trustRoot === undefined ? realCwd : real(options.trustRoot);
   const trusted = (userPolicy?.trustedProjects ?? []).some((entry) =>
-    isInside(real(expandHome(entry, home)), realCwd),
+    isInside(real(expandHome(entry, home)), realTrustRoot),
   );
 
   const agents = project.policy?.agents ?? {};

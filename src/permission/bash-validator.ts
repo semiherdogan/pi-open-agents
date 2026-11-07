@@ -532,7 +532,8 @@ function hiddenTargets(judged: Judged): boolean {
 function protectedLocations(writeRules: PermissionRule[]): string[] {
   const locations = new Set<string>();
   for (const rule of writeRules) {
-    if (rule.pattern === WILDCARD) continue;
+    // Unanchored patterns (`**/.pi/**`) have no literal prefix: as an ancestor location they would deny every delete.
+    if (rule.pattern === WILDCARD || !path.isAbsolute(rule.pattern)) continue;
     const segments = rule.pattern.split(PATH_SEPARATOR);
     const globIndex = segments.findIndex((segment) => GLOB_CHARS.test(segment));
     const literal = segments.slice(0, globIndex === -1 ? segments.length : globIndex).join(PATH_SEPARATOR);
@@ -751,10 +752,20 @@ function protectedWrite(
 
 // ─── Rules ───────────────────────────────────────────────────────────────────
 
+// Command names compare case-insensitively (`CURL x` runs curl on macOS); arguments stay case-sensitive.
+function lowerFirstWord(words: Word[]): Word[] {
+  const [first, ...rest] = words;
+  if (first === undefined || first.dynamic) return words;
+  return [{ ...first, text: first.text.toLowerCase() }, ...rest];
+}
+
 function bashDenyHit(judged: Judged, entries: string[]): string | undefined {
+  const argv = lowerFirstWord(judged.argv);
+  const raw = lowerFirstWord(judged.raw);
   return entries.find((entry) => {
-    const pattern = tokens(entry);
-    return tokensMatch(pattern, judged.argv, true) || tokensMatch(pattern, judged.raw, true);
+    const [name, ...rest] = tokens(entry);
+    const pattern = name === undefined ? [] : [name.toLowerCase(), ...rest];
+    return tokensMatch(pattern, argv, true) || tokensMatch(pattern, raw, true);
   });
 }
 

@@ -30,6 +30,8 @@ import { allowedAgentNames, isSubagentProcess, parentInheritedRules } from "./su
 import { registerPermissionGate } from "./permission/gate.ts";
 import { PolicyRuntime } from "./permission/policy-runtime.ts";
 import { registerPolicyGate } from "./permission/policy-gate.ts";
+import { readPolicySnapshot } from "./permission/policy-snapshot.ts";
+import { createDelegationPlanner } from "./permission/delegation.ts";
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -64,7 +66,7 @@ function loadSettings(cwd: string): Settings {
 
 export default function piOpenAgents(pi: ExtensionAPI): void {
   const manager = new AgentManager();
-  const policyRuntime = new PolicyRuntime({ agentDir: getAgentDir() });
+  const policyRuntime = new PolicyRuntime({ agentDir: getAgentDir(), received: readPolicySnapshot(process.env), inherited: parentInheritedRules(process.env) });
 
   // ── Register CLI flag immediately (before session_start) ──────────────────
   // Extension flags are parsed during startup, before session_start fires.
@@ -98,14 +100,6 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
     // Register TUI controls + tools + subagent tool
     registerTuiControls(manager, pi);
     registerAgentTools(manager, pi);
-    registerSubagentTool(pi, {
-      agents: result.agents,
-      agentDir: getAgentDir(),
-      getActiveAgent: () => manager.getActive(),
-    });
-
-    // Runtime permission gate: enforces allow/deny/ask on every tool call
-    // (argument-aware patterns + interactive ask; fail-closed in subagents).
     const resolveAgent = (): AgentDefinition | undefined => {
       // In subagent children the active agent is not applied (the executor
       // configures them via CLI flags), so resolve by the env var it passes.
@@ -113,6 +107,15 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
       if (childName) return manager.getAgent(childName);
       return manager.getActive();
     };
+    registerSubagentTool(pi, {
+      agents: result.agents,
+      agentDir: getAgentDir(),
+      getActiveAgent: resolveAgent,
+      planDelegation: createDelegationPlanner({ runtime: policyRuntime }),
+    });
+
+    // Runtime permission gate: enforces allow/deny/ask on every tool call
+    // (argument-aware patterns + interactive ask; fail-closed in subagents).
     // The legacy gate stands down while a policy file exists; the policy gate owns those calls.
     registerPermissionGate(pi, {
       resolveAgent: () => (policyRuntime.isActive(ctx.cwd) ? undefined : resolveAgent()),

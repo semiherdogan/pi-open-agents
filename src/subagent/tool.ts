@@ -25,6 +25,7 @@ import type { AgentDefinition, PermissionRule } from "../types.ts";
 import { spawnableAgents } from "../discovery/loader.ts";
 import { matchPermissionKey, toolToPermission } from "../permission/evaluator.ts";
 import { parsePermissionRules } from "../permission/parser.ts";
+import type { DelegationInput, DelegationPlan } from "../permission/delegation.ts";
 import {
   availableSubagentsForAgent,
   resolveSubagentSession,
@@ -280,6 +281,8 @@ export interface RegisterSubagentToolOptions {
   agentDir?: string;
   /** Returns the currently active primary agent, if any. Used for allowedAgents filtering. */
   getActiveAgent?: () => AgentDefinition | undefined;
+  /** Strict-mode delegation planning; absent = the legacy #8 values below. */
+  planDelegation?: (input: DelegationInput) => DelegationPlan;
 }
 
 /**
@@ -386,6 +389,9 @@ export function registerSubagentTool(
       const ownRules = activeAgent?.permission ? parsePermissionRules(activeAgent.permission) : [];
       const parentCeiling = computeDelegationCeiling(activeTools, ownRules.filter(isRestrictive));
       const parentRules = composeInheritedRules(ownRules, parentInheritedRules(env));
+      const legacy = { parentCeiling, parentRules: parentRules.length > 0 ? parentRules : undefined };
+      const plan: Partial<DelegationPlan> = options.planDelegation?.({ activeAgent, agent, cwd: ctx.cwd, childCwd, legacy }) ?? legacy;
+      for (const note of plan.notes ?? []) ctx.ui?.notify(note, "warning");
 
       const result = await runner({
         agent,
@@ -398,8 +404,9 @@ export function registerSubagentTool(
         session,
         modelOverride: params.model,
         outputPath: params.output && params.output.trim() ? params.output : undefined,
-        parentCeiling,
-        parentRules: parentRules.length > 0 ? parentRules : undefined,
+        parentCeiling: plan.parentCeiling,
+        parentRules: plan.parentRules,
+        extraEnv: plan.extraEnv,
         onProgress: (progress) => onUpdate?.(toProgressResult(progress)),
       });
 

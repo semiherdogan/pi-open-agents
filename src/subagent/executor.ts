@@ -134,6 +134,8 @@ export interface RunSubagentOptions {
    * automatic temp archive of the full transcript output.
    */
   outputPath?: string;
+  /** Extra child env vars, merged last. */
+  extraEnv?: Record<string, string>;
   resolvePi?: () => Promise<PiResolution> | PiResolution;
   runner?: ProcessRunner;
   fs?: ExecutorFs;
@@ -764,6 +766,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
       ...buildSubagentEnv(envVars),
+      ...options.extraEnv,
     };
 
     // ── Process JSON events from stdout ──

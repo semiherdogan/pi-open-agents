@@ -204,6 +204,26 @@ export function decidePolicyCall(options: PolicyDecisionInput): PolicyDecision {
   return { ...strictest, candidates, targets };
 }
 
+/**
+ * Decides the call against the process's own policy and every delegation ceiling
+ * above it: a hard deny from any policy wins, otherwise the most restrictive
+ * decision (ties keep the earlier one, so `self` explains agreeing decisions).
+ */
+export function decideWithCeilings(options: PolicyDecisionInput, ceilings: EffectivePolicy[]): PolicyDecision {
+  const decisions = [decidePolicyCall(options)];
+  for (const ceiling of ceilings) {
+    const decision = decidePolicyCall({ ...options, policy: ceiling, inherited: [] });
+    decisions.push({ ...decision, reason: `delegating agent ${ceilingName(ceiling)}: ${decision.reason}` });
+  }
+  const hard = decisions.find((decision) => decision.action === ACTION.deny && decision.hard);
+  if (hard) return hard;
+  return decisions.reduce((kept, next) => (RESTRICTIVENESS[next.action] > RESTRICTIVENESS[kept.action] ? next : kept));
+}
+
+function ceilingName(policy: EffectivePolicy): string {
+  return policy.agentName === undefined ? "(no agent)" : `"${policy.agentName}"`;
+}
+
 // The highest-index rule matching any spelling equals the max of per-spelling last matches.
 function decideGroup(rules: PermissionRule[], category: string, group: string[]): PolicyDecision {
   for (let index = rules.length - 1; index >= 0; index--) {
@@ -298,15 +318,19 @@ export function registerPolicyGate(pi: ExtensionAPI, options: PolicyGateOptions)
       const input = (event as { input?: Record<string, unknown> }).input ?? {};
       const arg = extractToolArg(toolName, input);
       shown = arg === undefined ? undefined : preview(arg);
-      const decision = decidePolicyCall({
-        toolName,
-        input,
-        policy,
-        inherited: options.inheritedRules(),
-        cwd: ctx.cwd,
-        home: runtime.home,
-        realpath: runtime.realpath,
-      });
+      // With a parent snapshot, its ceilings and inherited rules replace the env's legacy rules.
+      const decision = decideWithCeilings(
+        {
+          toolName,
+          input,
+          policy,
+          inherited: runtime.fromSnapshot ? runtime.inherited() : options.inheritedRules(),
+          cwd: ctx.cwd,
+          home: runtime.home,
+          realpath: runtime.realpath,
+        },
+        runtime.ceilings(),
+      );
 
       if (decision.targets.length > 0) shown = describeTargets(decision.targets);
 
