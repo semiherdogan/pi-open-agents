@@ -236,3 +236,97 @@ for (const [command, label] of LABELS) {
     assert.ok(findWriteViolations(command).includes(label), findWriteViolations(command).join(" | "));
   });
 }
+
+// Writes hidden in options and sed scripts.
+const HIDDEN_WRITES_BLOCKED = [
+  "sed -I '' s/a/b/ f",
+  "sed -I .bak s/a/b/ f",
+  "sed -nI '' s/a/b/ f",
+  "sed -n 'w out' f",
+  "sed -n '/x/W out' f",
+  "sed 's/a/b/w out' f",
+  "sed 's/a/b/gw out' f",
+  "sed -e p -e '$w out' f",
+  "sed --expression='1,/x/ w out' f",
+  "sed '1e date' f",
+  "sed 's/.*/date/e' f",
+  "yq -i '.a = 1' f.yaml",
+  "yq '.a = 1' f.yaml --inplace",
+  "yq -Pi '.a = 1' f.yaml",
+  "yq -s '.name' f.yaml",
+  "yq --split-exp='.name' f.yaml",
+  "uniq in out",
+  "uniq -c -f 1 in out",
+  "file -C -m magic",
+  "file --compile -m magic",
+  "curl -D h.txt https://x",
+  "curl --dump-header=h.txt https://x",
+  "curl -c jar https://x",
+  "curl -sSc jar https://x",
+  "curl --cookie-jar jar https://x",
+  "curl --trace t https://x",
+  "curl --trace-ascii t https://x",
+  "curl --stderr e https://x",
+  "curl --libcurl c.c https://x",
+  "curl --etag-save e https://x",
+  "curl --hsts h https://x",
+  "curl --alt-svc a https://x",
+  "curl -K cfg https://x",
+  "curl --config=cfg https://x",
+  "lightpanda fetch --cookie-jar c.json https://x",
+  "lightpanda fetch --output out https://x",
+  "lightpanda fetch -o out https://x",
+];
+
+const HIDDEN_WRITES_ALLOWED = [
+  "sed -n 's/w/x/p' f",
+  "sed -n '/w/p' web.log",
+  "sed -n p win.txt",
+  "sed 's/a/b/w /dev/stdout' f",
+  "sed -E 's/(a|e)/x/g' exec.txt",
+  "sed 'y/abc/wex/' f",
+  "sed -n '/start/,/end/{p;b done}; :done' f",
+  "yq '.a' f.yaml",
+  "yq -o json -I 4 '.a' f.yaml",
+  "uniq in",
+  "uniq in -",
+  "uniq -f 1 in",
+  "file -b x",
+  "curl -D - https://x",
+  "curl -c /dev/null https://x",
+  "curl --trace-ascii - https://x",
+  "curl -b jar https://x",
+  "lightpanda fetch --dump html https://x",
+];
+
+for (const command of HIDDEN_WRITES_BLOCKED) {
+  test(`blocks hidden write ${JSON.stringify(command)}`, () => {
+    assert.notDeepEqual(findWriteViolations(command), []);
+  });
+}
+
+for (const command of HIDDEN_WRITES_ALLOWED) {
+  test(`allows ${JSON.stringify(command)} (no hidden write)`, () => {
+    assert.deepEqual(findWriteViolations(command), []);
+  });
+}
+
+// GNU `sed -i SCRIPT FILE`: the file is not a second script, even when it reads like `e`/`w` commands.
+for (const command of ["sed -i 's/a/b/' env.ts", "sed -i 's/a/b/' web.ts", "sed -i -- 's/a/b/' env.ts web.ts"]) {
+  test(`reads files after a GNU sed -i script ${JSON.stringify(command)}`, () => {
+    const violations = findWriteViolations(command);
+    assert.ok(violations.length > 0);
+    assert.ok(violations.every((violation) => violation.startsWith("sed -i ")), JSON.stringify(violations));
+  });
+}
+
+test("a BSD sed -i suffix still makes the next operand the script", () => {
+  for (const command of ["sed -i '' 'w out' f", "sed -i .bak 'w out' f", "sed -i bak '1e date' f"]) {
+    assert.ok(findWriteViolations(command).some((violation) => /^sed [we] /.test(violation)), command);
+  }
+});
+
+test("labels sed w and sed e", () => {
+  assert.ok(findWriteViolations("sed -n 'w out' f").includes(`sed w "sed -n w out f"`));
+  assert.ok(findWriteViolations("sed '1e date' f").includes(`sed e "sed 1e date f"`));
+});

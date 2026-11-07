@@ -210,3 +210,40 @@ for (const [command, expected] of LABELS) {
     assert.deepEqual(findGitViolations(command), expected);
   });
 }
+
+// Config overrides that can name a program turn a read-only command into one that runs it.
+const CONFIG_BLOCKED = [
+  "git -c diff.external=rm diff",
+  "git -c core.pager='sh -c x' log",
+  "git -c core.fsmonitor=./x status",
+  "git -c alias.x='!rm -rf .' x",
+  "git -c diff.a.textconv=x diff",
+  "git -c Core.Pager=x log",
+  "git --config-env=core.pager=EVIL log",
+  "git --config-env core.sshCommand=EVIL ls-remote origin",
+  'git -c "$K" status',
+  "git -c",
+];
+const CONFIG_ALLOWED = [
+  "git -c color.ui=always log",
+  "git -c core.quotepath=off status",
+  "git -c log.showSignature=false log",
+  "git -c diff.noprefix=true diff",
+  "git -c i18n.logOutputEncoding=utf-8 log",
+];
+
+for (const command of CONFIG_BLOCKED) {
+  test(`blocks config override: ${JSON.stringify(command)}`, () => {
+    assert.notDeepEqual(findGitViolations(command), []);
+  });
+}
+
+for (const command of CONFIG_ALLOWED) {
+  test(`allows safe config override: ${JSON.stringify(command)}`, () => {
+    assert.deepEqual(findGitViolations(command), []);
+  });
+}
+
+test("label: config override names the setting", () => {
+  assert.deepEqual(findGitViolations("git -c diff.external=rm diff"), ["git -c diff.external=rm"]);
+});

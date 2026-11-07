@@ -22,8 +22,13 @@ const LABEL_OPAQUE_SHELL = "git (opaque shell -c)";
 const LABEL_DYNAMIC_EVAL = "git (dynamic eval)";
 const LABEL_PIPED_SHELL = "git (piped to shell)";
 
+const CONFIG_OPTION = "-c";
+const CONFIG_ENV_OPTION = "--config-env";
 // Global options that consume the following word, unless written with `=`.
-const GLOBAL_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+const GLOBAL_VALUE_OPTIONS = new Set(["-C", CONFIG_OPTION, CONFIG_ENV_OPTION, "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+// Config keys `-c`/`--config-env` may set; any other key can name a program (core.pager, diff.external, alias.*, ...).
+const SAFE_CONFIG_KEYS = new Set(["core.quotepath", "core.abbrev", "diff.renames", "diff.noprefix"]);
+const SAFE_CONFIG_PREFIXES = ["color.", "log.", "format.", "i18n."];
 const INFO_FLAGS = new Set(["--version", "--help"]);
 const INFO_SUBCOMMANDS = new Set(["version", "help"]);
 
@@ -228,12 +233,30 @@ function readOnlyAllowed(subcommand: string, args: string[]): boolean {
   return true;
 }
 
+// Section and variable names are case-insensitive; a dynamic setting is never safe.
+function isSafeConfig(setting: Word | undefined): boolean {
+  if (setting === undefined || setting.dynamic) return false;
+  const separator = setting.text.indexOf(VALUE_SEPARATOR);
+  const key = (separator === -1 ? setting.text : setting.text.slice(0, separator)).toLowerCase();
+  return SAFE_CONFIG_KEYS.has(key) || SAFE_CONFIG_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+// The `KEY=VALUE` (or `KEY=ENVVAR`) word of a config option at words[i], when words[i] is one.
+function configSetting(words: Word[], i: number): { setting: Word | undefined } | undefined {
+  const word = words[i];
+  if (word.text === CONFIG_OPTION || word.text === CONFIG_ENV_OPTION) return { setting: words[i + 1] };
+  if (longName(word.text) === CONFIG_ENV_OPTION) return { setting: { ...word, text: word.text.slice(CONFIG_ENV_OPTION.length + 1) } };
+  return undefined;
+}
+
 function gitViolation(words: Word[], start: number): string | undefined {
   let i = start;
   let info = false;
   while (i < words.length && words[i].text.startsWith(OPTION_PREFIX)) {
     const text = words[i].text;
     if (INFO_FLAGS.has(text)) info = true;
+    const config = configSetting(words, i);
+    if (config !== undefined && !isSafeConfig(config.setting)) return `${GIT_NAME} ${longName(text)} ${config.setting?.text ?? ""}`.trimEnd();
     i += GLOBAL_VALUE_OPTIONS.has(text) ? 2 : 1;
   }
 

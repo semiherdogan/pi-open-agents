@@ -31,6 +31,8 @@ const PATH_SEPARATOR = "/";
 const GLOB_CHARS = /[*?]/;
 const PARENT_DIR = "..";
 const WRITE_CATEGORIES = ["edit", "write"] as const;
+// User alwaysDeny.paths also block these, so credentials cannot be read and sent out.
+export const READ_CATEGORIES = ["read", "grep", "find", "ls"] as const;
 // Blocked when a policy file exists but cannot be validated (fail-closed).
 const RISKY_CATEGORIES = ["bash", "shell", "powershell", "edit", "write"] as const;
 // Agent definitions, policy files, project extensions/settings and git metadata:
@@ -158,27 +160,43 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
   // (OS-level isolation territory).
   const roots = [cwd, ...(options.anchorRoots ?? [])];
   const lexicalHome = path.resolve(options.home ?? homedir());
-  const protectedPatterns = [
+  const anchoredPatterns = (patterns: readonly string[]): Set<string> => {
+    const out = new Set<string>();
+    for (const pattern of patterns) {
+      const anchorTo = (root: string, homeRoot: string): string => {
+        const expanded = expandHome(pattern, homeRoot);
+        return path.isAbsolute(expanded) ? expanded : path.join(root, expanded);
+      };
+      for (const root of roots) {
+        const anchored = anchorTo(real(root), home);
+        out.add(anchorTo(path.resolve(root), lexicalHome));
+        out.add(anchored);
+        out.add(canonicalizePattern(anchored, real));
+      }
+    }
+    return out;
+  };
+  const builtinPatterns = anchoredPatterns([
     ...BUILTIN_PROTECTED_PATHS,
     `${path.resolve(agentDir)}${ANY_DESCENDANT}`,
     `${real(agentDir)}${ANY_DESCENDANT}`,
-    ...(userPolicy?.alwaysDeny.paths ?? []),
-  ];
-  const hardPatterns = new Set<string>(ANYWHERE_PROTECTED_PATHS);
-  for (const pattern of protectedPatterns) {
-    const anchorTo = (root: string, homeRoot: string): string => {
-      const expanded = expandHome(pattern, homeRoot);
-      return path.isAbsolute(expanded) ? expanded : path.join(root, expanded);
-    };
-    for (const root of roots) {
-      const anchored = anchorTo(real(root), home);
-      hardPatterns.add(anchorTo(path.resolve(root), lexicalHome));
-      hardPatterns.add(anchored);
-      hardPatterns.add(canonicalizePattern(anchored, real));
+  ]);
+  const userPatterns = anchoredPatterns(userPolicy?.alwaysDeny.paths ?? []);
+  const writePatterns = new Set<string>([...ANYWHERE_PROTECTED_PATHS, ...builtinPatterns, ...userPatterns]);
+  for (const hardPattern of writePatterns) {
+    for (const category of WRITE_CATEGORIES) {
+      hardRules.push({ permission: category, pattern: hardPattern, action: DENY });
     }
   }
-  for (const hardPattern of hardPatterns) {
-    for (const category of WRITE_CATEGORIES) {
+  // Built-in locations stay readable; only the user's own entries are read-protected,
+  // including the directory itself so grep, find and ls cannot be rooted at it.
+  const readPatterns = new Set<string>();
+  for (const pattern of userPatterns) {
+    readPatterns.add(pattern);
+    if (pattern.endsWith(ANY_DESCENDANT)) readPatterns.add(pattern.slice(0, -ANY_DESCENDANT.length));
+  }
+  for (const hardPattern of readPatterns) {
+    for (const category of READ_CATEGORIES) {
       hardRules.push({ permission: category, pattern: hardPattern, action: DENY });
     }
   }

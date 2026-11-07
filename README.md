@@ -1,5 +1,7 @@
 # pi-open-agents
 
+> **Personal fork** of [andrea-tomassi/pi-open-agents](https://github.com/andrea-tomassi/pi-open-agents), synced weekly from upstream. It adds a runtime permission policy (user and project `permissions.json`, argv-level bash and git checks, restrict/role delegation, permission summaries in system prompts). See [PERMISSIONS.md](PERMISSIONS.md). Not published to npm; the npm badge below refers to upstream.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/andrea-tomassi/pi-open-agents/refs/heads/main/pi-open-agents-banner.png" alt="pi-open-agents" width="768">
 </p>

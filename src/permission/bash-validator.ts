@@ -8,9 +8,10 @@
  * parser cannot see through turns an allow into an ask.
  */
 
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import path from "node:path";
 import type { PermissionAction, PermissionRule } from "../types.ts";
+import { assignsVariable, CDPATH_VARIABLE, judgeEnvAssignments } from "./env-assignments.ts";
 import { matchPermissionKey } from "./evaluator.ts";
 import { findGitViolations } from "./git-guard.ts";
 import { matchPattern } from "./matcher.ts";
@@ -27,7 +28,7 @@ import {
   type SimpleCommand,
   type Word,
 } from "./shell.ts";
-import { findWriteViolations, inlineInterpreterScript, isFileWriteRedirect, mutatesFiles } from "./shell-writes.ts";
+import { embeddedWrites, findWriteViolations, inlineInterpreterScript, isFileWriteRedirect, mutatesFiles } from "./shell-writes.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -46,13 +47,20 @@ const RESTRICTIVENESS: Record<PermissionAction, number> = {
 /** Categories whose command text is a POSIX shell script. */
 export const POSIX_SHELL_CATEGORIES: readonly string[] = ["bash", "shell"];
 const WRITE_CATEGORIES: readonly string[] = ["edit", "write"];
+// Hard read rules come only from user alwaysDeny.paths.
+const READ_CATEGORY = "read";
+const READ_REDIRECT_OPS = new Set(["<", "<>"]);
+// `$HOME` and `${HOME}` are the home dir; any other expansion leaves a word unknown.
+const HOME_VARIABLE = /\$\{HOME\}|\$HOME(?![A-Za-z0-9_])/g;
+const DYNAMIC_TEXT = /[$`]/;
+const HIDDEN_PREFIX = ".";
 const WILDCARD = "*";
 const PATH_SEPARATOR = "/";
 const TOKEN_SPLIT = /\s+/;
 const WORD_SEPARATOR = " ";
 const HOME = "~";
 const HOME_PREFIX = "~/";
-// `~+` is $PWD; any other tilde prefix (`~-`, `~user`, `~+2`) is only known at run time.
+// `~+` is $PWD and `~<current user>` the home dir; any other tilde prefix (`~-`, `~other`, `~+2`) is only known at run time.
 const CWD_TILDE = "~+";
 const GLOB_CHARS = /[*?]/;
 // Shell glob characters; `[` is not understood by matchPattern, so such a segment may match anything.
@@ -106,7 +114,9 @@ const SOURCE_NAMES = new Set(["source", "."]);
 const HERESTRING_OP = "<<<";
 const RG_NAME = "rg";
 const RG_PRE = "--pre";
-const RG_PRE_VALUE = "--pre=";
+// GNU getopt accepts any unambiguous abbreviation; `--c` is shared with --check.
+const SORT_COMPRESS_LONG = "--compress-program";
+const SORT_COMPRESS_MIN_LENGTH = "--co".length;
 // Filled in by find -exec, fd -x, xargs -I or parallel, so the real target is invisible.
 const PLACEHOLDER = "{}";
 const STDIN_CONSUMERS = new Set(["xargs", "parallel"]);
@@ -145,7 +155,17 @@ export interface ShellValidationInput {
   inherited: PermissionRule[];
   cwd: string;
   home?: string;
+  /** Login name whose `~name` is the home dir; defaults to the current user. */
+  user?: string;
   realpath?: (p: string) => string;
+}
+
+/** Facts about the shell that tilde expansion and cd tracking depend on. */
+interface ShellContext {
+  home: string;
+  user: string | undefined;
+  /** CDPATH is assigned somewhere in the script, so `cd` targets are unknown. */
+  cdpath: boolean;
 }
 
 export interface ShellDecision {
@@ -438,6 +458,11 @@ function writeTargets(cmd: SimpleCommand, judged: Judged | undefined, args: Word
   const targets: Target[] = expandWords(redirects, unverifiable);
   if (judged?.index !== undefined && mutatesFiles(cmd)) targets.push(...mutationTargets(args));
   if (judged !== undefined && commandName(judged) === SORT_NAME) targets.push(...sortOutputs(args));
+  if (judged?.index !== undefined) {
+    const embedded = embeddedWrites(cmd);
+    targets.push(...embedded.targets.map((target) => ({ ...target, literalTilde: true })));
+    unverifiable.push(...embedded.unverifiable);
+  }
   return targets;
 }
 
@@ -582,18 +607,27 @@ function isAnchored(target: string): boolean {
   return path.isAbsolute(target) || target === HOME || target.startsWith(HOME_PREFIX);
 }
 
-// `~+[/x]` becomes `.[/x]`; undefined for a tilde prefix only known at run time.
-function resolveTilde(target: string): string | undefined {
+// `~+[/x]` becomes `.[/x]`, `~<user>[/x]` becomes `~[/x]`; undefined for a tilde prefix only known at run time.
+function resolveTilde(target: string, user: string | undefined): string | undefined {
   if (!target.startsWith(HOME)) return target;
   const slash = target.indexOf(PATH_SEPARATOR);
   const prefix = slash === -1 ? target : target.slice(0, slash);
   if (prefix === HOME) return target;
   if (prefix === CWD_TILDE) return CURRENT_DIR + target.slice(prefix.length);
+  if (user !== undefined && prefix === HOME + user) return HOME + target.slice(prefix.length);
   return undefined;
 }
 
+function currentUser(): string | undefined {
+  try {
+    return userInfo().username;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Static texts a target can stand for; reasons go to unverifiable for parts only known at run time. */
-function targetTexts(target: Target, unverifiable: string[]): string[] {
+function targetTexts(target: Target, unverifiable: string[], user: string | undefined): string[] {
   if (target.dynamic) {
     unverifiable.push(`dynamic write target "${target.text}"`);
     return [];
@@ -612,11 +646,15 @@ function targetTexts(target: Target, unverifiable: string[]): string[] {
   if (target.literalTilde) return variants;
   const texts: string[] = target.quoted ? [...variants] : [];
   for (const variant of variants) {
-    const resolved = resolveTilde(variant);
-    if (resolved === undefined) unverifiable.push(`tilde prefix of "${variant}" is only known at run time`);
+    const resolved = resolveTilde(variant, user);
+    if (resolved === undefined) unverifiable.push(tildeReason(variant));
     else texts.push(resolved);
   }
   return [...new Set(texts)];
+}
+
+function tildeReason(text: string): string {
+  return `tilde prefix of "${text}" is only known at run time`;
 }
 
 // A find start path inside a protected location is a hard deny; above one it only asks.
@@ -631,9 +669,14 @@ interface Directories {
   dynamic: boolean;
 }
 
-function trackCd(judged: Judged, state: Directories, home: string): void {
+function trackCd(judged: Judged, state: Directories, context: ShellContext): void {
   if (judged.index === undefined) return;
   if (!CD_COMMANDS.has(basename(judged.cmd.words[judged.index].text))) return;
+  const { home } = context;
+  if (context.cdpath) {
+    state.dynamic = true;
+    return;
+  }
   const args = judged.cmd.words.slice(judged.index + 1);
   let i = 0;
   while (i < args.length && isOption(args[i]) && args[i].text !== OPTION_END) i++;
@@ -648,7 +691,7 @@ function trackCd(judged: Judged, state: Directories, home: string): void {
     return;
   }
   const expanded = target.quoted ? [target.text] : expandBraces(target.text);
-  const resolved = expanded?.length === 1 ? (target.quoted ? expanded[0] : resolveTilde(expanded[0])) : undefined;
+  const resolved = expanded?.length === 1 ? (target.quoted ? expanded[0] : resolveTilde(expanded[0], context.user)) : undefined;
   if (resolved === undefined) {
     state.dynamic = true;
     return;
@@ -693,10 +736,11 @@ function inlineScriptText(cmd: SimpleCommand, index: number, command: string): s
 function protectedWrite(
   entries: Entry[],
   input: ShellValidationInput,
-  home: string,
+  context: ShellContext,
   unverifiable: string[],
 ): string | undefined {
   const { policy, cwd, realpath } = input;
+  const { home } = context;
   const writeRules = policy.hardRules.filter((rule) =>
     WRITE_CATEGORIES.some((category) => matchPermissionKey(rule.permission, category)),
   );
@@ -711,7 +755,7 @@ function protectedWrite(
     }
     const args = judged?.index === undefined ? [] : expandWords(judged.cmd.words.slice(judged.index + 1), unverifiable);
     const resolve = (targets: Target[]): string[] =>
-      targets.flatMap((target) => targetTexts(target, unverifiable)).filter((target) => {
+      targets.flatMap((target) => targetTexts(target, unverifiable, context.user)).filter((target) => {
         if (isAnchored(target) || !state.dynamic) return true;
         unverifiable.push(`write target "${target}" after a dynamic cd`);
         return false;
@@ -746,7 +790,92 @@ function protectedWrite(
       if (mention !== undefined) return `inline script in "${text(judged.argv)}" mentions protected location "${mention}"`;
     }
 
-    trackCd(judged, state, home);
+    trackCd(judged, state, context);
+  }
+  return undefined;
+}
+
+// ─── Read-Protected Paths ────────────────────────────────────────────────────
+
+// Static text of a word, with `$HOME` read as `~`; undefined while another expansion remains.
+function staticText(text: string, dynamic: boolean): string | undefined {
+  if (!dynamic) return text;
+  const replaced = text.replace(HOME_VARIABLE, HOME);
+  return DYNAMIC_TEXT.test(replaced) ? undefined : replaced;
+}
+
+// Every spelling of a file a word may hand to its command: itself, a `key=value` value, attached short-option values.
+// A leading `@` (curl -d @file) is dropped by normalizeToolPath. Tilde prefixes resolve as for write targets.
+function readForms(word: Word, user: string | undefined, unverifiable: string[]): string[] {
+  const value = staticText(word.text, word.dynamic);
+  if (value === undefined) return [];
+  const variants = word.quoted ? [...new Set([value, ...(expandBraces(value) ?? [])])] : [value];
+  const forms: string[] = [];
+  for (const variant of variants) {
+    forms.push(variant);
+    const separator = variant.indexOf(VALUE_SEPARATOR);
+    if (separator !== -1) forms.push(variant.slice(separator + 1));
+    if (variant.startsWith(OPTION_PREFIX) && !variant.startsWith(LONG_OPTION_PREFIX)) {
+      for (let i = SHORT_OPTION_LENGTH; i < variant.length; i++) forms.push(variant.slice(i));
+    }
+  }
+  return forms.flatMap((form) => {
+    const resolved = resolveTilde(form, user);
+    if (resolved !== undefined) return [resolved];
+    unverifiable.push(tildeReason(form));
+    return [];
+  });
+}
+
+// A glob can expand to the location, an ancestor of it (read recursively) or a path inside it.
+function globReachesLocation(target: string, base: string, locations: string[], options: { home: string; realpath?: (p: string) => string }): string | undefined {
+  const segments = target.split(PATH_SEPARATOR);
+  const globIndex = segments.findIndex((segment) => SHELL_GLOB_CHARS.test(segment));
+  const dirText = segments.slice(0, globIndex).join(PATH_SEPARATOR) || (globIndex === 0 ? CURRENT_DIR : PATH_SEPARATOR);
+  const glob = segments[globIndex].toLowerCase();
+  const dirs = pathCandidates(dirText, base, options).filter((candidate) => path.isAbsolute(candidate)).map((candidate) => candidate.toLowerCase());
+  return locations.find((location) =>
+    dirs.some((dir) => {
+      if (isAncestorOrSelf(location, dir)) return true;
+      if (!isAncestorOrSelf(dir, location)) return false;
+      const child = childSegment(dir, location);
+      // Bash globs skip names starting with a dot unless the pattern starts with one.
+      if (child.startsWith(HIDDEN_PREFIX) && !glob.startsWith(HIDDEN_PREFIX)) return false;
+      return glob.includes(BRACKET_GLOB) || matchPattern(glob, child);
+    }),
+  );
+}
+
+/** A static argument or input redirect naming a user alwaysDeny path; such a read is a hard deny. */
+function deniedRead(entries: Entry[], input: ShellValidationInput, context: ShellContext, unverifiable: string[]): string | undefined {
+  const { policy, cwd, realpath } = input;
+  const { home } = context;
+  const readRules = policy.hardRules.filter((rule) => rule.pattern !== WILDCARD && matchPermissionKey(rule.permission, READ_CATEGORY));
+  if (readRules.length === 0) return undefined;
+  const locations = protectedLocations(readRules);
+  const options = { home, realpath };
+  const state: Directories = { dirs: [cwd], dynamic: false };
+  const scratch: string[] = [];
+
+  for (const { cmd, judged } of entries) {
+    const inputs = cmd.redirects
+      .filter((redirect) => READ_REDIRECT_OPS.has(redirect.op))
+      .map((redirect): Word => ({ text: redirect.target, quoted: false, dynamic: redirect.targetDynamic }));
+    for (const word of expandWords([...cmd.words, ...inputs], scratch)) {
+      for (const form of readForms(word, context.user, unverifiable)) {
+        for (const base of state.dirs) {
+          if (SHELL_GLOB_CHARS.test(form)) {
+            const location = globReachesLocation(form, base, locations, options);
+            if (location !== undefined) return `"${form}" can read protected location "${location}" (alwaysDeny.paths)`;
+          }
+          const candidates = pathCandidates(form, base, options);
+          const spellings = [...candidates, ...candidates.map((candidate) => `${candidate}${PATH_SEPARATOR}`)];
+          const rule = readRules.find((hard) => spellings.some((spelling) => matchesHard(hard.pattern, spelling)));
+          if (rule) return `"${form}" names a read-protected path ("${rule.pattern}", alwaysDeny.paths)`;
+        }
+      }
+    }
+    if (judged !== undefined) trackCd(judged, state, context);
   }
   return undefined;
 }
@@ -792,18 +921,25 @@ function ruleVerdict(rules: PermissionRule[], argv: Word[], category: string): V
   return { action: ACTION.allow, reason: source };
 }
 
-// `rg --pre CMD` runs CMD on every searched file.
-function rgPreprocessor(argv: Word[], unverifiable: string[]): Word | undefined {
-  if (basename(argv[0].text) !== RG_NAME) return undefined;
+function isSortCompress(option: string): boolean {
+  return option.length >= SORT_COMPRESS_MIN_LENGTH && SORT_COMPRESS_LONG.startsWith(option);
+}
+
+// `rg --pre CMD` runs CMD on every searched file, `sort --compress-program CMD` on its temporary files.
+function helperProgram(argv: Word[], unverifiable: string[]): Word | undefined {
+  const name = basename(argv[0].text);
+  const matches = name === RG_NAME ? (option: string) => option === RG_PRE : name === SORT_NAME ? isSortCompress : undefined;
+  if (matches === undefined) return undefined;
   for (let i = 1; i < argv.length; i++) {
     const word = argv[i];
     if (word.text === OPTION_END) break;
-    const value = word.text === RG_PRE
-      ? argv[i + 1]
-      : word.text.startsWith(RG_PRE_VALUE) ? { ...word, text: word.text.slice(RG_PRE_VALUE.length) } : undefined;
+    if (!word.text.startsWith(LONG_OPTION_PREFIX)) continue;
+    const separator = word.text.indexOf(VALUE_SEPARATOR);
+    if (!matches(separator === -1 ? word.text : word.text.slice(0, separator))) continue;
+    const value = separator === -1 ? argv[i + 1] : { ...word, text: word.text.slice(separator + 1) };
     if (value === undefined) continue;
     if (value.dynamic) {
-      unverifiable.push(`dynamic rg preprocessor "${value.text}"`);
+      unverifiable.push(`dynamic ${name} helper program "${value.text}"`);
       return undefined;
     }
     return value;
@@ -817,8 +953,8 @@ function commandVerdict(judged: Judged, rules: PermissionRule[], category: strin
   const lowered = judged.cmd.words.slice(judged.cmd.words.length - judged.raw.length);
   const privileged = lowered.slice(0, wrapperEnd + 1).some((word) => PRIVILEGE_WRAPPERS.has(basename(word.text)));
   if (privileged) verdict = stricter(verdict, ruleVerdict(rules, judged.raw, category));
-  const preprocessor = rgPreprocessor(judged.argv, unverifiable);
-  if (preprocessor !== undefined) verdict = stricter(verdict, ruleVerdict(rules, [preprocessor], category));
+  const helper = helperProgram(judged.argv, unverifiable);
+  if (helper !== undefined) verdict = stricter(verdict, ruleVerdict(rules, [helper], category));
   return verdict;
 }
 
@@ -919,8 +1055,20 @@ export function validateShellCommand(input: ShellValidationInput): ShellDecision
   const loweredGit = loweredGitDeny(entries, policy, commands);
   if (loweredGit) return loweredGit;
 
-  const protectedReason = protectedWrite(entries, input, home, unverifiable);
+  const flatCommands = entries.map((entry) => entry.cmd);
+  const env = judgeEnvAssignments(flatCommands, command, policy.denyGitWrite);
+  if (env?.hard) return deny(env.reason, true, commands);
+
+  const context: ShellContext = {
+    home,
+    user: input.user ?? currentUser(),
+    cdpath: assignsVariable(flatCommands, command, CDPATH_VARIABLE),
+  };
+  const protectedReason = protectedWrite(entries, input, context, unverifiable);
   if (protectedReason !== undefined) return deny(protectedReason, true, commands);
+
+  const readReason = deniedRead(entries, input, context, unverifiable);
+  if (readReason !== undefined) return deny(readReason, true, commands);
 
   for (const judged of judgedCommands) {
     const entry = bashDenyHit(judged, policy.bashDeny);
@@ -933,6 +1081,7 @@ export function validateShellCommand(input: ShellValidationInput): ShellDecision
   }
 
   const verdicts = judgedCommands.map((judged) => commandVerdict(judged, rules, category, unverifiable));
+  if (env !== undefined) verdicts.push({ action: env.action, reason: env.reason });
   const verdict: Verdict =
     verdicts.length > 0 ? verdicts.reduce(stricter) : { action: ACTION.allow, reason: NO_COMMAND_REASON };
   if (verdict.action === ACTION.deny) return deny(verdict.reason, false, commands);

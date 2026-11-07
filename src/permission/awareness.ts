@@ -315,9 +315,9 @@ function protectedLines(all: EffectivePolicy[]): string[] {
   const targets = [
     `${builtinProtectedNames().join(", ")} (any project)`,
     `the pi agent directory (${agentDirs.map((dir) => sanitizeTo(dir, PATH_MAX)).join(", ")})`,
-    ...userPaths.map(pathCode),
   ];
   const lines = [`Never write to: ${targets.join(", ")}.`];
+  if (userPaths.length > 0) lines.push(`Never read or write: ${userPaths.map(pathCode).join(", ")}.`);
   const bash = unionOf(all, (p) => p.bashDeny);
   if (bash.length > 0) lines.push(`Forbidden commands: ${bash.map(code).join(", ")}`);
   const tools = unionOf(all, (p) => p.sources.user.policy?.alwaysDeny.tools ?? []);
