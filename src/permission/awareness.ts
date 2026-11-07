@@ -53,7 +53,8 @@ const TOKEN_SPLIT = /\s+/;
 const ANY_DESCENDANT = "/**";
 const RULE_KEY_SEPARATOR = "\u0000";
 const PATH_LIST_MAX = 8;
-const COMMAND_LIST_MAX = 16;
+// Full list so the model knows every allowed command; the cap only guards against pathological policies.
+const COMMAND_LIST_SAFETY_MAX = 200;
 const DELEGATE_LIST_MAX = 8;
 const TOOL_LIST_MAX = 12;
 
@@ -290,19 +291,19 @@ function builtinProtectedNames(): string[] {
 function bashLines(input: PermissionSummaryInput): string[] {
   const facts = bashFacts(input);
   const lines: string[] = [];
-  if (facts.allowed.length > 0) lines.push(`Bash allowed command prefixes: ${capped(facts.allowed.map(code), COMMAND_LIST_MAX)}`);
+  if (facts.allowed.length > 0) lines.push(`Bash allowed command prefixes: ${capped(facts.allowed.map(code), COMMAND_LIST_SAFETY_MAX)}`);
   if (facts.asks.length > 0 && !input.headless) {
-    lines.push(`Bash commands that ask for approval: ${capped(facts.asks.map(code), COMMAND_LIST_MAX)}`);
+    lines.push(`Bash commands that ask for approval: ${capped(facts.asks.map(code), COMMAND_LIST_SAFETY_MAX)}`);
   }
   if (facts.exceptionsDenied.length > 0) {
-    lines.push(`Bash exceptions (denied): ${capped(facts.exceptionsDenied.map(code), COMMAND_LIST_MAX)}`);
+    lines.push(`Bash exceptions (denied): ${capped(facts.exceptionsDenied.map(code), COMMAND_LIST_SAFETY_MAX)}`);
   }
   if (facts.exceptionsAsk.length > 0) {
-    lines.push(`Bash exceptions (asks): ${capped(facts.exceptionsAsk.map(code), COMMAND_LIST_MAX)}`);
+    lines.push(`Bash exceptions (asks): ${capped(facts.exceptionsAsk.map(code), COMMAND_LIST_SAFETY_MAX)}`);
   }
   if (facts.blanket) {
     lines.push("Bash: any command not listed below as forbidden.");
-    if (facts.denied.length > 0) lines.push(`Denied commands: ${capped(facts.denied.map(code), COMMAND_LIST_MAX)}`);
+    if (facts.denied.length > 0) lines.push(`Denied commands: ${capped(facts.denied.map(code), COMMAND_LIST_SAFETY_MAX)}`);
   } else {
     lines.push("Bash: any other command: denied.");
   }

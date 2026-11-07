@@ -47,6 +47,7 @@ const CUSTOM_TOOL = "web_fetch";
 const ACTIVE_TOOLS = ["read", "bash", "edit", "write", CUSTOM_TOOL, SAFE_TOOL, SUBAGENT_TOOL];
 const LINE_BUDGET = 35;
 const PATH_LENGTH = 150;
+const MANY_PREFIX_COUNT = 40;
 const MTIME_BUMP_MS = 5000;
 const NO_ANSWER = /no answer was given/;
 const ALLOWED_LINE = "Bash allowed command prefixes:";
@@ -405,6 +406,15 @@ test("awareness: a probe built from a pattern matches that pattern", () => {
   assert.equal(probeCommand("npm run *"), `npm run ${PROBE_WORD}`);
   assert.ok(matchPattern("npm run *", probeCommand("npm run *")));
 });
+
+test("awareness: every allowed bash prefix is listed without a more suffix", withBox(async (box) => {
+  const prefixes = Array.from({ length: MANY_PREFIX_COUNT }, (_, i) => `tool${i} run`);
+  const bash = Object.fromEntries(prefixes.map((p) => [p, "allow" as const]));
+  const h = primary(box, "many", { bash });
+  const summary = section(await h.start());
+  assert.deepEqual(listedPrefixes(summary).sort(), [...prefixes].sort());
+  assert.doesNotMatch(line(summary, ALLOWED_LINE) ?? "", /\bmore\b/);
+}));
 
 test("awareness: long filesystem paths in Never write to are not cut at the item cap", withBox((box) => {
   writeProjectPolicy(box);
