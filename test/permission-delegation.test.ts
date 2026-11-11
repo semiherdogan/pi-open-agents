@@ -532,6 +532,20 @@ test(
 );
 
 test(
+  "snapshot: user agents survive the encode/read round trip",
+  withBox((box) => {
+    const userAgents: Record<string, PermissionConfig> = { "*": { bash: { "npm test": "allow" } }, implementer: { edit: "ask" } };
+    writeUserPolicy(box, { agents: userAgents });
+    const { architect, implementer } = team(box);
+    const env = childEnv(implementer, plan(primaryRuntime(box), box, architect, implementer));
+    const received = readPolicySnapshot(env);
+    assert.equal(received?.status, SNAPSHOT_STATUS.valid);
+    if (received?.status !== SNAPSHOT_STATUS.valid) return;
+    assert.deepEqual(received.snapshot.files.user.policy?.agents, userAgents);
+  }),
+);
+
+test(
   "snapshot: a child never reads policy files after the snapshot",
   withBox(async (box) => {
     writeUserPolicy(box);

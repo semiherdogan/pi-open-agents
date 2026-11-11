@@ -26,7 +26,11 @@ In strict mode every tool call is decided: hard denies first, then rules, then a
     "tools": ["powershell"],
     "bash": ["curl", "sudo", "npm publish"]
   },
-  "trustedProjects": ["~/Projects", "/work/client-repo"]
+  "trustedProjects": ["~/Projects", "/work/client-repo"],
+  "agents": {
+    "*": { "bash": { "git status": "allow" } },
+    "implementer": { "bash": { "pytest": "allow" } }
+  }
 }
 ```
 
@@ -36,6 +40,7 @@ In strict mode every tool call is decided: hard denies first, then rules, then a
 - `alwaysDeny.tools`: tools denied for every agent.
 - `alwaysDeny.bash`: command prefixes denied for every agent (same token-prefix matching as bash rules, command name compared case-insensitively and by basename).
 - `trustedProjects`: absolute or `~/` paths. A project at or below an entry is trusted.
+- `agents`: same map format as the [project file](#project-file). Applies in every project, trusted or not (the user file is never trust-filtered). `*` also covers sessions without an agent.
 
 Unknown keys, a wrong `version` or wrong types make the file invalid.
 
@@ -84,10 +89,12 @@ permission:
 Rules are concatenated in this order and evaluated last match wins:
 
 1. Safe defaults (per category, see below)
-2. Agent frontmatter `permission` (or `tools`)
-3. Project `agents["*"]`
-4. Project `agents["<agent>"]`
-5. `alwaysDeny` and protected paths: hard denies, checked before any rule and never overridden, not even by an "always" answer
+2. User `agents["*"]`
+3. Agent frontmatter `permission` (or `tools`)
+4. User `agents["<agent>"]`
+5. Project `agents["*"]`
+6. Project `agents["<agent>"]`
+7. `alwaysDeny` and protected paths: hard denies, checked before any rule and never overridden, not even by an "always" answer
 
 Additional rules:
 

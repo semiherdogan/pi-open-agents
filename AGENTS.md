@@ -18,3 +18,8 @@
 - Keep conflicts small: new files first, minimal hooks in upstream files, no renames or restructuring. Leave `.github/workflows/publish.yml` in place (avoids modify/delete conflicts).
 - Setup: enable Actions and this workflow in the fork's Actions tab (scheduled workflows are off on forks by default, and GitHub disables them after 60 days without repository activity), and enable "Allow GitHub Actions to create and approve pull requests". Also enable Issues (Settings > General > Features) to get the conflict report as an issue.
 - Optional: secret `SYNC_TOKEN` (fine-grained PAT, this repo only, Contents, Pull requests and Workflows read/write) so upstream workflow changes sync automatically. Upstream workflows are never run automatically on the sync branch (the merge commit carries `[skip ci]`), so review the PR before merging.
+
+## Pi version bump
+
+- The three devDependencies `@earendil-works/pi-ai`, `pi-coding-agent` and `pi-tui` stay pinned to one identical exact version, never a range: `pi-coding-agent@X` depends on exactly `pi-ai@X` and `pi-tui@X`, so any mismatch installs nested duplicate copies that break typecheck.
+- After a pi update run `scripts/bump-pi.sh [version]`; without an argument it takes the active version from `~/Library/Application Support/PiBoard/runtime/pi/current.json`, then pins, installs, fails on duplicate copies and runs typecheck and tests.

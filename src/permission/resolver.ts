@@ -1,15 +1,15 @@
 /**
  * Permission policy resolver.
  *
- * Combines agent frontmatter rules, project rules and user hard denies into
- * one effective policy. Returns undefined when no policy file exists, which
+ * Combines user and project agent rules, agent frontmatter rules and user hard
+ * denies into one effective policy. Returns undefined when no policy file exists, which
  * keeps the legacy (frontmatter-only) behavior untouched.
  */
 
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { AgentDefinition, PermissionAction, PermissionRule } from "../types.ts";
+import type { AgentDefinition, PermissionAction, PermissionConfig, PermissionRule } from "../types.ts";
 import { toolToPermission } from "./evaluator.ts";
 import { parsePermissionRules } from "./parser.ts";
 import {
@@ -64,7 +64,7 @@ export interface ResolvePolicyOptions {
 export interface EffectivePolicy {
   agentName: string | undefined;
   trusted: boolean;
-  /** Frontmatter, then project `*`, then project agent rules, then hard rules last (last-match-wins). */
+  /** User `*`, frontmatter, user agent, project `*`, project agent, then hard rules last (last-match-wins). */
   rules: PermissionRule[];
   /** Denies nothing may override (project rules, "always allow" answers). Consumed by the gate in M2. */
   hardRules: PermissionRule[];
@@ -210,14 +210,17 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
     isInside(real(expandHome(entry, home)), realTrustRoot),
   );
 
-  const agents = project.policy?.agents ?? {};
   const agentName = agent?.name;
-  let projectRules = [
-    ...(Object.hasOwn(agents, ALL_AGENTS_KEY) ? parsePermissionRules(agents[ALL_AGENTS_KEY]) : []),
-    ...(agentName !== undefined && Object.hasOwn(agents, agentName)
-      ? parsePermissionRules(agents[agentName])
-      : []),
-  ];
+  const sharedAndOwnRules = (agents: Record<string, PermissionConfig>) => ({
+    shared: Object.hasOwn(agents, ALL_AGENTS_KEY) ? parsePermissionRules(agents[ALL_AGENTS_KEY]) : [],
+    own:
+      agentName !== undefined && Object.hasOwn(agents, agentName)
+        ? parsePermissionRules(agents[agentName])
+        : [],
+  });
+  const userAgentRules = sharedAndOwnRules(userPolicy?.agents ?? {});
+  const projectAgentRules = sharedAndOwnRules(project.policy?.agents ?? {});
+  let projectRules = [...projectAgentRules.shared, ...projectAgentRules.own];
   if (!trusted) {
     const kept = projectRules.filter((rule) => rule.action === DENY);
     const dropped = projectRules.length - kept.length;
@@ -234,7 +237,7 @@ export function resolvePolicy(options: ResolvePolicyOptions): EffectivePolicy | 
   return {
     agentName,
     trusted,
-    rules: [...ownRules, ...projectRules, ...hardRules],
+    rules: [...userAgentRules.shared, ...ownRules, ...userAgentRules.own, ...projectRules, ...hardRules],
     hardRules,
     denyGitWrite: userPolicy?.alwaysDeny.gitWrite ?? true,
     bashDeny: userPolicy?.alwaysDeny.bash ?? [],

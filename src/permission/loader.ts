@@ -17,7 +17,7 @@ import type { PermissionAction, PermissionConfig } from "../types.ts";
 export const POLICY_FILE_NAME = "permissions.json";
 export const PROJECT_POLICY_DIR = ".pi";
 export const POLICY_VERSION = 1;
-// Project agent key applying to every agent and to no-agent sessions.
+// Agent key (user and project files) applying to every agent and to no-agent sessions.
 export const ALL_AGENTS_KEY = "*";
 const NOT_FOUND = "ENOENT";
 const HOME_PREFIX = "~/";
@@ -42,6 +42,7 @@ export interface AlwaysDeny {
 export interface UserPolicy {
   alwaysDeny: AlwaysDeny;
   trustedProjects: string[];
+  agents: Record<string, PermissionConfig>;
 }
 
 export interface ProjectPolicy {
@@ -135,7 +136,7 @@ function expectAction(value: unknown, context: string): PermissionAction {
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
 
-const USER_KEYS = ["version", "alwaysDeny", "trustedProjects"] as const;
+const USER_KEYS = ["version", "alwaysDeny", "trustedProjects", "agents"] as const;
 const ALWAYS_DENY_KEYS = ["gitWrite", "paths", "tools", "bash"] as const;
 const PROJECT_KEYS = ["version", "agents"] as const;
 
@@ -168,7 +169,7 @@ export function parseUserPolicy(raw: unknown): UserPolicy {
     }
   });
 
-  return { alwaysDeny: parseAlwaysDeny(obj.alwaysDeny), trustedProjects };
+  return { alwaysDeny: parseAlwaysDeny(obj.alwaysDeny), trustedProjects, agents: parseAgents(obj.agents) };
 }
 
 export function parsePolicyPermissionConfig(raw: unknown, context: string): PermissionConfig {
@@ -191,20 +192,21 @@ export function parsePolicyPermissionConfig(raw: unknown, context: string): Perm
   return config;
 }
 
+function parseAgents(raw: unknown): Record<string, PermissionConfig> {
+  const agents: Record<string, PermissionConfig> = {};
+  if (raw === undefined) return agents;
+  for (const [name, config] of Object.entries(expectObject(raw, "agents"))) {
+    agents[name] = parsePolicyPermissionConfig(config, `agents.${name}`);
+  }
+  return agents;
+}
+
 export function parseProjectPolicy(raw: unknown): ProjectPolicy {
   const obj = expectObject(raw, "policy");
   checkKeys(obj, PROJECT_KEYS, "");
   checkVersion(obj);
 
-  const agents: Record<string, PermissionConfig> = {};
-  if (obj.agents !== undefined) {
-    const rawAgents = expectObject(obj.agents, "agents");
-    for (const [name, config] of Object.entries(rawAgents)) {
-      agents[name] = parsePolicyPermissionConfig(config, `agents.${name}`);
-    }
-  }
-
-  return { agents };
+  return { agents: parseAgents(obj.agents) };
 }
 
 // ─── Loading ─────────────────────────────────────────────────────────────────

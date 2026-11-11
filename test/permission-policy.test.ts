@@ -76,6 +76,7 @@ function userFile(policy: Partial<UserPolicy> = {}): PolicyFile<UserPolicy> {
     policy: {
       alwaysDeny: { gitWrite: true, paths: [], tools: [], bash: [], ...policy.alwaysDeny },
       trustedProjects: policy.trustedProjects ?? [],
+      agents: policy.agents ?? {},
     },
   };
 }
@@ -104,6 +105,7 @@ test("loader: valid user file applies defaults", () => {
     assert.deepEqual(file.policy, {
       alwaysDeny: { gitWrite: true, paths: [], tools: [], bash: [] },
       trustedProjects: [],
+      agents: {},
     });
   });
 });
@@ -190,6 +192,25 @@ test("loader: relative trustedProjects entry is invalid", () => {
   });
 });
 
+test("loader: user file agents block loads; absent key yields {}", () => {
+  withSandbox((box) => {
+    const agents = { "*": { bash: "ask" }, worker: { edit: { "*.md": "allow" } } };
+    writeUser(box, { version: 1, agents });
+    assert.deepEqual(loadUserPolicy(box.agentDir).policy?.agents, agents);
+    writeUser(box, { version: 1 });
+    assert.deepEqual(loadUserPolicy(box.agentDir).policy?.agents, {});
+  });
+});
+
+test("loader: invalid action in user agents invalidates the file and names the path", () => {
+  withSandbox((box) => {
+    writeUser(box, { version: 1, agents: { implementer: { bash: { pytest: "maybe" } } } });
+    const file = loadUserPolicy(box.agentDir);
+    assert.equal(file.status, POLICY_FILE_STATUS.invalid);
+    assert.match(file.error ?? "", /agents\.implementer\.bash\["pytest"\]/);
+  });
+});
+
 // ─── Resolver ────────────────────────────────────────────────────────────────
 
 test("resolver: no policy files returns undefined", () => {
@@ -239,6 +260,99 @@ test("resolver: untrusted project drops allow rules and warns once", () => {
     assert.equal(policy.warnings.length, 1);
     assert.match(policy.warnings[0], /not in trustedProjects/);
     assert.match(policy.warnings[0], /1 non-deny/);
+  });
+});
+
+test("resolver: rule order is user *, own, user agent, project *, project agent, hard", () => {
+  withSandbox((box) => {
+    const agent = { ...baseAgent, permission: { bash: { own: "deny", fm: "deny" } } } as AgentDefinition;
+    const policy = resolvePolicy({
+      agent,
+      cwd: box.cwd,
+      agentDir: box.agentDir,
+      user: userFile({
+        trustedProjects: [box.cwd],
+        agents: { "*": { bash: { fm: "allow", us: "ask" } }, worker: { bash: { own: "allow", ua: "ask" } } },
+      }),
+      project: projectFile({ "*": { bash: { ps: "ask" } }, worker: { bash: { pa: "ask" } } }),
+    });
+    assert.ok(policy);
+    assert.deepEqual(
+      policy.rules.slice(0, 7).map((r) => [r.pattern, r.action]),
+      [["fm", "allow"], ["us", "ask"], ["own", "deny"], ["fm", "deny"], ["own", "allow"], ["ua", "ask"], ["ps", "ask"]],
+    );
+    assert.deepEqual(policy.rules.slice(-policy.hardRules.length), policy.hardRules);
+    assert.equal(policy.rules.length, 8 + policy.hardRules.length);
+    // Frontmatter beats user `*`; user agent beats frontmatter.
+    assert.equal(evaluate("bash", "fm", policy.rules).action, "deny");
+    assert.equal(evaluate("bash", "own", policy.rules).action, "allow");
+  });
+});
+
+test("resolver: untrusted project keeps user allow rules and drops project allow rules", () => {
+  withSandbox((box) => {
+    const policy = resolvePolicy({
+      agent: baseAgent,
+      cwd: box.cwd,
+      agentDir: box.agentDir,
+      user: userFile({ agents: { "*": { bash: { "u*": "allow" } }, worker: { bash: { "w*": "allow" } } } }),
+      project: projectFile({ worker: { bash: { "p*": "allow" } } }),
+    });
+    assert.ok(policy);
+    assert.equal(policy.trusted, false);
+    assert.equal(evaluate("bash", "u1", policy.rules).action, "allow");
+    assert.equal(evaluate("bash", "w1", policy.rules).action, "allow");
+    assert.notEqual(evaluate("bash", "p1", policy.rules).action, "allow");
+    assert.match(policy.warnings[0], /1 non-deny/);
+  });
+});
+
+test("resolver: without an agent only user * applies", () => {
+  withSandbox((box) => {
+    const policy = resolvePolicy({
+      agent: undefined,
+      cwd: box.cwd,
+      agentDir: box.agentDir,
+      user: userFile({ agents: { "*": { bash: { shared: "allow" } }, worker: { bash: { named: "allow" } } } }),
+      project: missingProject,
+    });
+    assert.ok(policy);
+    assert.equal(evaluate("bash", "shared", policy.rules).action, "allow");
+    assert.notEqual(evaluate("bash", "named", policy.rules).action, "allow");
+  });
+});
+
+test("resolver: user file alone turns the policy on and applies user rules", () => {
+  withSandbox((box) => {
+    const policy = resolvePolicy({
+      agent: baseAgent,
+      cwd: box.cwd,
+      agentDir: box.agentDir,
+      user: userFile({ agents: { worker: { bash: { "npm test": "allow" } } } }),
+      project: missingProject,
+    });
+    assert.ok(policy);
+    assert.equal(evaluate("bash", "npm test", policy.rules).action, "allow");
+  });
+});
+
+test("resolver: hard rules beat user allow", () => {
+  withSandbox((box) => {
+    const policy = resolvePolicy({
+      agent: baseAgent,
+      cwd: box.cwd,
+      agentDir: box.agentDir,
+      home: box.home,
+      user: userFile({
+        alwaysDeny: { gitWrite: true, paths: [], tools: ["webfetch"], bash: [] },
+        agents: { "*": { webfetch: "allow", edit: { "**": "allow" } } },
+      }),
+      project: missingProject,
+    });
+    assert.ok(policy);
+    assert.equal(evaluate("webfetch", "https://x", policy.rules).action, "deny");
+    assert.equal(evaluate("edit", join(box.cwd, ".git", "config"), policy.rules).action, "deny");
+    assert.equal(evaluate("edit", join(box.cwd, "src", "a.ts"), policy.rules).action, "allow");
   });
 });
 

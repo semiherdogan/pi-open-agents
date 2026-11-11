@@ -65,7 +65,7 @@ function policyFor(box: Box, permission: PermissionConfig, alwaysDeny: Partial<A
     user: {
       path: join(box.agentDir, POLICY_FILE_NAME),
       status: POLICY_FILE_STATUS.loaded,
-      policy: { alwaysDeny: { gitWrite: true, paths: [], tools: [], bash: [], ...alwaysDeny }, trustedProjects: [] },
+      policy: { alwaysDeny: { gitWrite: true, paths: [], tools: [], bash: [], ...alwaysDeny }, trustedProjects: [], agents: {} },
     },
     project: { path: join(box.cwd, ".pi", POLICY_FILE_NAME), status: POLICY_FILE_STATUS.missing },
   });
