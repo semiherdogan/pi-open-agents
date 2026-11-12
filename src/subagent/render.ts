@@ -10,6 +10,7 @@
 
 import type { AgentProgress, AgentResult } from "./executor.ts";
 import { numberArg, preview, shortenPath, stringArg, formatTokens } from "../utils/format.ts";
+import { formatElapsed, liveElapsedMs } from "./elapsed.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,8 @@ export interface RenderOptions {
   suppressOutput?: boolean;
   suppressUsage?: boolean;
   expandHint?: string;
+  now?: () => number;
+  live?: boolean;
 }
 
 export type ResultLineKind = "status" | "tool" | "hint" | "usage" | "output" | "blank";
@@ -48,10 +51,6 @@ export function contextUsageSeverity(usage: {
   if (percent >= 0.9) return "error";
   if (percent >= 0.7) return "warning";
   return "dim";
-}
-
-function elapsedSeconds(ms: number): number {
-  return Math.round(ms / 1000);
 }
 
 export function formatUsage(progress: AgentProgress): string {
@@ -178,6 +177,8 @@ function formatToolLineItems(
       for (const line of formatResultLines(tool.nested, {
         expanded: false,
         suppressOutput: true,
+        now: options.now,
+        live: options.live === true && tool.status === "running",
       })) {
         lines.push({ ...line, text: indent(line.text, 2) });
       }
@@ -201,7 +202,8 @@ export function formatResultLines(
 ): ResultLine[] {
   const icon = progress.status === "error" ? "✗" : progress.status === "done" ? "✓" : "▸";
   const sessionBadge = progress.session?.effective === "fork" ? " [fork]" : "";
-  const statusLine = `${icon} ${progress.agent}${sessionBadge}${progress.model ? ` (${progress.model})` : ""} — ${progress.tools.length} tools · ${elapsedSeconds(progress.elapsedMs)}s`;
+  const elapsedMs = options.live ? liveElapsedMs(progress, options.now) : progress.elapsedMs;
+  const statusLine = `${icon} ${progress.agent}${sessionBadge}${progress.model ? ` (${progress.model})` : ""} — ${progress.tools.length} tools · ${formatElapsed(elapsedMs)}`;
   const toolLines = formatToolLineItems(progress, options);
   const usage = formatUsage(progress);
 

@@ -34,6 +34,7 @@ import {
   type AgentResult,
   type SubagentSessionMode,
 } from "./executor.ts";
+import { trackLiveElapsed } from "./elapsed.ts";
 import {
   contextUsageSeverity,
   formatSubagentCall,
@@ -259,7 +260,7 @@ function styledCollapsedLine(
 function renderResultLines(
   details: AgentResult | AgentProgress,
   theme: ThemeLike,
-  options: { expanded: boolean; suppressOutput?: boolean; suppressUsage?: boolean; expandHint?: string },
+  options: { expanded: boolean; suppressOutput?: boolean; suppressUsage?: boolean; expandHint?: string; live?: boolean },
 ): Container {
   const container = new Container();
   for (const line of formatResultLines(details, options)) {
@@ -421,7 +422,8 @@ export function registerSubagentTool(
       return new Text(`${title} ${theme.fg("dim", callText.replace(/^subagent \S+ /, ""))}`, 0, 0);
     },
 
-    renderResult(result, renderOpts, theme) {
+    renderResult(result, renderOpts, theme, context) {
+      trackLiveElapsed(context, renderOpts.isPartial);
       const details = result.details as AgentResult | AgentProgress | undefined;
       if (!details) {
         const first = result.content[0];
@@ -433,6 +435,7 @@ export function registerSubagentTool(
           expanded: true,
           suppressOutput: true,
           suppressUsage: true,
+          live: renderOpts.isPartial,
         });
         container.addChild(new Spacer(1));
         container.addChild(new Markdown(details.output || "(no output)", 0, 0, getMarkdownTheme()));
@@ -446,6 +449,7 @@ export function registerSubagentTool(
       return renderResultLines(details, theme, {
         expanded: false,
         expandHint: keyHint("app.tools.expand", "to expand"),
+        live: renderOpts.isPartial,
       });
     },
   });
