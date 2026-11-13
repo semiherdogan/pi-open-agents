@@ -163,7 +163,7 @@ export function delegationModesFor(
       activeAgent,
       agent,
       configured: config?.modes[agent.name],
-      projectTrusted: state.self.trusted,
+      projectTrusted: state.self?.trusted ?? false,
       childProjectTrusted: childSelf.trusted,
     });
     modes.set(agent.name, mode);
@@ -200,13 +200,14 @@ export function createDelegationPlanner(options: DelegationPlannerOptions): (inp
       activeAgent,
       agent,
       configured: config.modes[agent.name],
-      projectTrusted: state.self.trusted,
+      projectTrusted: state.self?.trusted ?? false,
       childProjectTrusted: childSelf.trusted,
     });
     if (refusal !== undefined) notes.push(`role delegation refused, using ${DELEGATION_MODE.restrict}: ${refusal}`);
 
     const role = mode === DELEGATION_MODE.role;
-    const ceilings = role ? state.ceilings : [...state.ceilings, serializePolicy(state.self)];
+    // An exempt (agentless) parent has no policy, so it adds no ceiling.
+    const ceilings = role || !state.self ? state.ceilings : [...state.ceilings, serializePolicy(state.self)];
     const snapshot = encodePolicySnapshot({
       version: POLICY_SNAPSHOT_VERSION,
       agent: agent.name,

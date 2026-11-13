@@ -68,7 +68,13 @@ function loadSettings(cwd: string): Settings {
 
 export default function piOpenAgents(pi: ExtensionAPI): void {
   const manager = new AgentManager();
-  const policyRuntime = new PolicyRuntime({ agentDir: getAgentDir(), received: readPolicySnapshot(process.env), inherited: parentInheritedRules(process.env) });
+  const policyRuntime = new PolicyRuntime({
+    agentDir: getAgentDir(),
+    received: readPolicySnapshot(process.env),
+    inherited: parentInheritedRules(process.env),
+    // No agent in a primary session means plain pi: the policy does not apply.
+    exemptAgentless: !isSubagentProcess(process.env),
+  });
 
   // ── Register CLI flag immediately (before session_start) ──────────────────
   // Extension flags are parsed during startup, before session_start fires.

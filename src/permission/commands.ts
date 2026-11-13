@@ -74,6 +74,14 @@ const SNAPSHOT_NOTE = "Running subagents keep their policy snapshot; the change 
 const BUSY_RELOAD = "An agent run is in progress; reload after it finishes so the running agent keeps its policy.";
 const NOT_EXECUTED = "Nothing was executed.";
 const HEADLESS_NOTE = " (headless: deny, subagents cannot ask)";
+const EXEMPT_NOTE = "No agent is active: the permission policy does not apply to this session.";
+const EXEMPT_HINT = `Select an agent to enforce it, or run /${PERMISSIONS_COMMAND} <agent> to see what an agent may do.`;
+const EXEMPT_REASON = "no agent is active; the permission policy does not apply";
+const STRICT_MODE = {
+  on: "on",
+  off: "off (legacy frontmatter gate)",
+  exempt: "not applied (no active agent)",
+} as const;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -142,6 +150,7 @@ function trustedEntry(runtime: PolicyRuntime, entries: string[], projectRoot: st
 function summary(pi: ExtensionAPI, options: PermissionCommandOptions, ctx: ExtensionCommandContext, named?: AgentDefinition): Report {
   const { runtime } = options;
   if (!runtime.isActive(ctx.cwd)) return { text: strictOffText(runtime, ctx.cwd), level: LEVEL.info };
+  if (!named && runtime.isExempt(options.resolveAgent())) return { text: `${EXEMPT_NOTE}\n${EXEMPT_HINT}`, level: LEVEL.info };
 
   const files = runtime.files(ctx.cwd);
   const awareness: PermissionAwarenessOptions = {
@@ -197,8 +206,12 @@ function source(options: PermissionCommandOptions, ctx: ExtensionCommandContext)
   const active = options.resolveAgent();
   const files = runtime.files(ctx.cwd);
   const strict = runtime.isActive(ctx.cwd);
+  const exempt = strict && runtime.isExempt(active);
+  let mode: string = STRICT_MODE.off;
+  if (exempt) mode = STRICT_MODE.exempt;
+  else if (strict) mode = STRICT_MODE.on;
   const lines = [
-    `Strict mode: ${strict ? "on" : "off (legacy frontmatter gate)"}`,
+    `Strict mode: ${mode}`,
     fileStatus("User policy", files.user),
     fileStatus("Project policy", files.project),
   ];
@@ -208,7 +221,7 @@ function source(options: PermissionCommandOptions, ctx: ExtensionCommandContext)
     const projectRoot = path.dirname(path.dirname(files.project.path));
     const entry = policy.trusted ? trustedEntry(runtime, files.user.policy?.trustedProjects ?? [], projectRoot) : undefined;
     lines.push(`Trusted: ${policy.trusted ? YES : NO}${entry ? ` (trustedProjects entry ${entry})` : ""}`);
-  } else {
+  } else if (!exempt) {
     lines.push(`Trusted: ${NO} (strict mode off)`);
   }
 
@@ -233,6 +246,7 @@ function reload(options: PermissionCommandOptions, ctx: ExtensionCommandContext)
     : ["Reloaded the permission policy files."];
   lines.push(fileStatus("User policy", files.user), fileStatus("Project policy", files.project));
   if (!runtime.isActive(ctx.cwd)) lines.push("Strict mode is off; the legacy frontmatter gate applies.");
+  else if (runtime.isExempt(active)) lines.push(EXEMPT_NOTE);
   const warnings = [...new Set([...fresh, ...(runtime.policyFor(active, ctx.cwd)?.warnings ?? [])])];
   for (const warning of warnings) lines.push(`Warning: ${warning}`);
   lines.push(SNAPSHOT_NOTE);
@@ -273,6 +287,11 @@ function explain(options: PermissionCommandOptions, ctx: ExtensionCommandContext
       ...(decision.matched ? [`Matched rule: ${decision.matched.permission} "${decision.matched.pattern}" -> ${decision.matched.action}`] : []),
       NOT_EXECUTED,
     ];
+    return { text: lines.join("\n"), level: LEVEL.info };
+  }
+
+  if (runtime.isExempt(active)) {
+    const lines = [header, EXEMPT_NOTE, actionLine(ACTION.allow), `Hard: ${NO}`, `Reason: ${EXEMPT_REASON}`, NOT_EXECUTED];
     return { text: lines.join("\n"), level: LEVEL.info };
   }
 

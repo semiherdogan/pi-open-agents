@@ -13,6 +13,8 @@ Without either file, upstream behavior applies unchanged: the legacy gate enforc
 
 In strict mode every tool call is decided: hard denies first, then rules, then a per-category default. Policy files are read once per agent run. Edits apply from the next run, and a running subagent never widens its permissions mid-run. Deleting a policy file mid-session does not lift its rules: the last loaded version is kept until pi restarts.
 
+A primary session without an active agent (`/agent none`, or no agent selected) runs as plain pi: the policy does not apply to it at all, including `alwaysDeny` and protected paths, and no `## Runtime Permissions` section is added to the prompt. Selecting an agent turns enforcement on from the next tool call. Subagents are never exempt.
+
 ## File formats
 
 ### User file
@@ -40,7 +42,7 @@ In strict mode every tool call is decided: hard denies first, then rules, then a
 - `alwaysDeny.tools`: tools denied for every agent.
 - `alwaysDeny.bash`: command prefixes denied for every agent (same token-prefix matching as bash rules, command name compared case-insensitively and by basename).
 - `trustedProjects`: absolute or `~/` paths. A project at or below an entry is trusted.
-- `agents`: same map format as the [project file](#project-file). Applies in every project, trusted or not (the user file is never trust-filtered). `*` also covers sessions without an agent.
+- `agents`: same map format as the [project file](#project-file). Applies in every project, trusted or not (the user file is never trust-filtered).
 
 Unknown keys, a wrong `version` or wrong types make the file invalid.
 
@@ -56,7 +58,7 @@ Unknown keys, a wrong `version` or wrong types make the file invalid.
 }
 ```
 
-- `agents["*"]` applies to every agent and to sessions without an agent.
+- `agents["*"]` applies to every agent. A session without an agent is not covered: no policy applies to it.
 - `agents["<name>"]` applies to that agent only, after `*`.
 - Each value is a permission map: `category: action` or `category: { pattern: action }`, with action `allow`, `ask` or `deny`.
 
@@ -190,6 +192,8 @@ Each subagent call runs in one of two modes, chosen by the delegating agent's fr
 - `restrict` (default): the child runs with its own policy, and the parent's policy is added as a ceiling. Every call must pass both.
 - `role`: the child runs with its own role policy; the parent is not added as a ceiling.
 
+A session without an agent has no policy of its own, so it adds no ceiling: a subagent it delegates to runs under its own policy only.
+
 `role` is granted only when all of these hold, otherwise it falls back to `restrict` with a note:
 
 - The child is listed in the delegating agent's `allowedAgents`.
@@ -214,7 +218,7 @@ All `/permissions` commands are read-only; nothing writes policy files or execut
 
 | Command | Shows |
 |---|---|
-| `/permissions` | The awareness summary for the active agent, plus the policy sources. Without a policy: that strict mode is off and which files it looks for. |
+| `/permissions` | The awareness summary for the active agent, plus the policy sources. Without a policy: that strict mode is off and which files it looks for. Without an active agent: that the policy is not applied. |
 | `/permissions <agent>` | The summary for `<agent>` as a primary agent in the current cwd (no ceilings). |
 | `/permissions source` | Each file's path and status (missing, loaded, invalid with error), trust and the matching `trustedProjects` entry, the active agent's definition file, and in a subagent the snapshot ceilings and inherited rules. |
 | `/permissions reload` | Re-reads the policy files and reports status and warnings. Refused while an agent run is in progress. Running subagents keep their snapshot. |
@@ -229,6 +233,7 @@ All `/permissions` commands are read-only; nothing writes policy files or execut
 
 ## Known limitations
 
+- A session without an agent is not restricted at all. An unknown `--agent` name, or resuming a session whose agent was deleted or disabled, leaves the session without an agent and therefore unrestricted; the banner shows whether an agent is active.
 - Script files are not inspected: `npm run x`, `make`, `bash x.sh`, `python script.py`, `source x.sh` and `sed -f script.sed` are judged by their command line only. Allow them only for agents you would trust with the script's contents.
 - Read protection of `alwaysDeny.paths` sees static paths only. A path built at run time (`cat $DIR/id_rsa` with `DIR=~/.ssh`, `cd "$D"`), a recursive read of a parent directory (`rg --hidden x ~`, `tar c ~`, `cp -r ~ /tmp`, the grep tool rooted at `~`) and program-internal reads (a tool that reads `~/.aws` by itself) are not caught.
 - Environment variables are judged by name only; a variable already set in the parent environment is not visible, and only the variables named in [Bash rules](#bash-rules) are treated as dangerous.
@@ -241,7 +246,7 @@ All `/permissions` commands are read-only; nothing writes policy files or execut
 - A nested symlink inside a protected directory, written through its real target path, is not caught.
 - After `set_agent`, the prompt section still shows the previous agent until the next run; enforcement switches immediately.
 - Other extensions loaded later can still change the system prompt or add tools; unknown tools ask.
-- A permitted process can start another pi or call tools directly; only OS-level isolation prevents that.
+- A permitted process can start another pi or call tools directly; only OS-level isolation prevents that. A `pi` started from bash is a new primary session: without `--agent` it has no agent and is not restricted, so never allow `pi` in bash rules.
 - The network is not policed: `curl` and similar commands can send data out once allowed.
 
 ## Example setup

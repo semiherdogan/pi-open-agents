@@ -37,11 +37,14 @@ export interface PolicyRuntimeOptions {
   received?: ReceivedSnapshot;
   /** Legacy parent rules (PI_OPEN_AGENTS_PARENT_RULES) of a process without a snapshot. */
   inherited?: PermissionRule[];
+  /** Set in a primary process: a session without an active agent runs as plain pi and no policy applies to it. */
+  exemptAgentless?: boolean;
 }
 
 /** What this process hands down: its own policy, the ceilings above it and the files they came from. */
 export interface DelegationState {
-  self: EffectivePolicy;
+  /** Undefined for an exempt (agentless) session: it has no policy to add as a ceiling. */
+  self: EffectivePolicy | undefined;
   ceilings: SerializedPolicy[];
   inherited: PermissionRule[];
   files: PolicySnapshotFiles;
@@ -85,6 +88,7 @@ export class PolicyRuntime {
   private receivedCeilings: EffectivePolicy[] = [];
   private receivedReported = false;
   private readonly inheritedRules: PermissionRule[];
+  private readonly exemptAgentless: boolean;
 
   constructor(options: PolicyRuntimeOptions) {
     this.agentDir = options.agentDir;
@@ -92,6 +96,7 @@ export class PolicyRuntime {
     this.realpath = options.realpath;
     this.received = options.received;
     this.inheritedRules = options.inherited ?? [];
+    this.exemptAgentless = options.exemptAgentless ?? false;
     if (this.received?.status === SNAPSHOT_STATUS.valid) {
       const { self, ceilings, files } = this.received.snapshot;
       this.receivedSelf = hydratePolicy(self, files);
@@ -102,6 +107,11 @@ export class PolicyRuntime {
   /** True when decisions come from a parent's snapshot (legacy inherited rules no longer apply). */
   get fromSnapshot(): boolean {
     return this.received !== undefined;
+  }
+
+  /** True when no policy applies to `agent`. A process on a parent's snapshot is never exempt. */
+  isExempt(agent: AgentDefinition | undefined): boolean {
+    return this.exemptAgentless && agent === undefined && this.received === undefined;
   }
 
   /** Identity of the policy inputs: changes only when a received snapshot or a loaded file's content changes. */
@@ -122,7 +132,7 @@ export class PolicyRuntime {
       return { self: this.receivedSelf!, ceilings: received.ceilings, inherited: received.inherited, files: received.files };
     }
     const self = this.policyFor(agent, cwd);
-    if (!self) return undefined;
+    if (!self && !(this.isExempt(agent) && this.isActive(cwd))) return undefined;
     const { user, project } = this.ensureSnapshot(cwd);
     return { self, ceilings: [], inherited: this.inheritedRules, files: { user, project } };
   }
@@ -223,6 +233,7 @@ export class PolicyRuntime {
 
   policyFor(agent: AgentDefinition | undefined, cwd: string): EffectivePolicy | undefined {
     if (this.receivedSnapshot()) return this.receivedSelf;
+    if (this.isExempt(agent)) return undefined;
     const snapshot = this.ensureSnapshot(cwd);
     const key = agent?.name;
     if (this.memo.has(key)) return this.memo.get(key);

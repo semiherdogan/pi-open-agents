@@ -30,6 +30,10 @@ const HOME_ENVS = ["HOME", "USERPROFILE"];
 const AGENT_NAME = "wiring-agent";
 const LEGACY_DENY = /^Permission denied: agent rules deny/;
 const POLICY_DENY = /^Permission denied\.\nOperation:/;
+const NO_AGENT_FLAG = null;
+const DEPTH_ENV = "PI_OPEN_AGENTS_DEPTH";
+const CHILD_DEPTH = "1";
+const UNLISTED_BASH = /unlisted bash operations are denied/;
 
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 type Block = { block: true; reason: string } | undefined;
@@ -64,11 +68,11 @@ function makeWorkspace() {
   };
 }
 
-async function startSession(cwd: string) {
+async function startSession(cwd: string, agentFlag: string | null = AGENT_NAME) {
   assert.ok(piOpenAgents, "factory available");
   const handlers = new Map<string, Handler[]>();
   const builtinTools = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-  const flags = new Map<string, string>([["agent", AGENT_NAME]]);
+  const flags = new Map<string, string>(agentFlag === NO_AGENT_FLAG ? [] : [["agent", agentFlag]]);
   const pi = {
     on: (event: string, handler: Handler) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
@@ -136,6 +140,33 @@ run("policy wiring: with a project policy file the policy gate decides", async (
     // Legacy allows unmatched bash; strict mode denies it by default.
     assert.match((await call("bash", { command: "ls" }))?.reason ?? "", /unlisted bash operations are denied/);
   } finally {
+    ws.dispose();
+  }
+});
+
+run("policy wiring: a primary session without an agent is not restricted by the policy", async () => {
+  const ws = makeWorkspace();
+  try {
+    ws.writeProjectPolicy();
+    const call = await startSession(ws.root, NO_AGENT_FLAG);
+    assert.equal(await call("bash", { command: "ls" }), undefined);
+    assert.equal(await call("bash", { command: "rm -rf x" }), undefined);
+  } finally {
+    ws.dispose();
+  }
+});
+
+run("policy wiring: a subagent process without a resolvable agent stays under the policy", async () => {
+  const ws = makeWorkspace();
+  const previous = process.env[DEPTH_ENV];
+  process.env[DEPTH_ENV] = CHILD_DEPTH;
+  try {
+    ws.writeProjectPolicy();
+    const call = await startSession(ws.root, NO_AGENT_FLAG);
+    assert.match((await call("bash", { command: "ls" }))?.reason ?? "", UNLISTED_BASH);
+  } finally {
+    if (previous === undefined) delete process.env[DEPTH_ENV];
+    else process.env[DEPTH_ENV] = previous;
     ws.dispose();
   }
 });
