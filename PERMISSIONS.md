@@ -214,7 +214,7 @@ In strict mode a `## Runtime Permissions` section is appended to the system prom
 
 ## Commands
 
-All `/permissions` commands are read-only; nothing writes policy files or executes the explained call.
+Every `/permissions` command except `init` is read-only; nothing executes the explained call.
 
 | Command | Shows |
 |---|---|
@@ -222,6 +222,7 @@ All `/permissions` commands are read-only; nothing writes policy files or execut
 | `/permissions <agent>` | The summary for `<agent>` as a primary agent in the current cwd (no ceilings). |
 | `/permissions source` | Each file's path and status (missing, loaded, invalid with error), trust and the matching `trustedProjects` entry, the active agent's definition file, and in a subagent the snapshot ceilings and inherited rules. |
 | `/permissions reload` | Re-reads the policy files and reports status and warnings. Refused while an agent run is in progress. Running subagents keep their snapshot. |
+| `/permissions init` | Creates `<cwd>/.pi/permissions.json` with an empty rule set for `agents["*"]`, then reloads the policy (during an agent run it applies from the next run). Never overwrites an existing file. Creating the file turns strict mode on for the project. |
 | `/permissions explain <tool> <argument...>` | How a call would be decided: action, hard yes/no, reason, matched rule. Example: `explain bash git push origin main`, `explain edit src/a.ts`, `explain webfetch https://x`. `explain apply_patch <text>` is a hard deny, as in the gate (the target path cannot be verified). In legacy mode it uses the legacy gate and says so. |
 | `/permissions help` | Usage. |
 

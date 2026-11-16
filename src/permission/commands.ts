@@ -1,8 +1,8 @@
 /**
- * Read-only `/permissions` command: shows the effective policy, where it comes
- * from, and how a hypothetical call would be decided. Every verdict comes from
- * the same functions the gates enforce with; nothing here writes policy files
- * or executes the explained call.
+ * `/permissions` command: shows the effective policy, where it comes from, and
+ * how a hypothetical call would be decided. Every verdict comes from the same
+ * functions the gates enforce with. Only `init` writes (a new project policy
+ * file, never an existing one); nothing executes the explained call.
  */
 
 import { homedir } from "node:os";
@@ -15,7 +15,8 @@ import type { AgentDefinition, PermissionAction, PermissionRule } from "../types
 import { buildPermissionSummary, delegateCandidates, type PermissionAwarenessOptions } from "./awareness.ts";
 import { DELEGATION_MODE, delegationModesFor } from "./delegation.ts";
 import { decideToolCall } from "./gate.ts";
-import { POLICY_FILE_STATUS, projectPolicyPath, userPolicyPath, type PolicyFile } from "./loader.ts";
+import { INIT_STATUS, initProjectPolicy, type InitResult } from "./init.ts";
+import { ALL_AGENTS_KEY, POLICY_FILE_STATUS, projectPolicyPath, userPolicyPath, type PolicyFile } from "./loader.ts";
 import { parsePermissionRules } from "./parser.ts";
 import { decideWithCeilings, FILE_TOOLS } from "./policy-gate.ts";
 import type { PolicyRuntime } from "./policy-runtime.ts";
@@ -28,6 +29,7 @@ export const PERMISSIONS_COMMAND = "permissions";
 export const SUBCOMMAND = {
   source: "source",
   reload: "reload",
+  init: "init",
   explain: "explain",
   help: "help",
 } as const;
@@ -67,11 +69,17 @@ const USAGE = [
   "/permissions <agent>: effective permissions of <agent> as a primary agent",
   "/permissions source: policy files, trust and where the active agent comes from",
   "/permissions reload: re-read the policy files now",
+  "/permissions init: create <cwd>/.pi/permissions.json with an empty rule set (never overwrites)",
   "/permissions explain <tool> <argument...>: how a call would be decided (never executed)",
   "/permissions help: this text",
 ].join("\n");
 const SNAPSHOT_NOTE = "Running subagents keep their policy snapshot; the change applies from the next run.";
 const BUSY_RELOAD = "An agent run is in progress; reload after it finishes so the running agent keeps its policy.";
+const INIT_STRICT_ON = "Strict mode is now on for agents in this project: their bash, edit and write calls without an allow rule are denied.";
+const INIT_NEXT_RUN = "An agent run is in progress; the file applies from the next run.";
+const INIT_HINT =
+  `Add rules under agents["${ALL_AGENTS_KEY}"].bash, for example "npm test": "allow". ` +
+  `A project's allow rules apply only when it is trusted: /${PERMISSIONS_COMMAND} ${SUBCOMMAND.source}.`;
 const NOT_EXECUTED = "Nothing was executed.";
 const HEADLESS_NOTE = " (headless: deny, subagents cannot ask)";
 const EXEMPT_NOTE = "No agent is active: the permission policy does not apply to this session.";
@@ -256,6 +264,33 @@ function reload(options: PermissionCommandOptions, ctx: ExtensionCommandContext)
   return { text: lines.join("\n"), level };
 }
 
+function init(options: PermissionCommandOptions, ctx: ExtensionCommandContext): Report {
+  const wasStrict = options.runtime.isActive(ctx.cwd);
+  let result: InitResult;
+  try {
+    result = initProjectPolicy(ctx.cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { text: `Could not create ${projectPolicyPath(ctx.cwd)}: ${message}`, level: LEVEL.error };
+  }
+  if (result.status === INIT_STATUS.exists) {
+    return { text: `${result.path} already exists; nothing was written.`, level: LEVEL.warning };
+  }
+  const lines = [`Created ${result.path} with no rules yet.`];
+  if (!wasStrict) lines.push(INIT_STRICT_ON);
+  let level: NotifyLevel = LEVEL.info;
+  if (ctx.isIdle()) {
+    // Reload so the new file is visible now and its warnings are reported, not swallowed.
+    const loaded = reload(options, ctx);
+    lines.push(loaded.text);
+    level = loaded.level;
+  } else {
+    lines.push(INIT_NEXT_RUN);
+  }
+  lines.push(INIT_HINT);
+  return { text: lines.join("\n"), level };
+}
+
 function actionLine(action: PermissionAction): string {
   return `Action: ${action}${action === ACTION.ask ? HEADLESS_NOTE : ""}`;
 }
@@ -339,6 +374,8 @@ function dispatch(pi: ExtensionAPI, options: PermissionCommandOptions, ctx: Exte
       return source(options, ctx);
     case SUBCOMMAND.reload:
       return reload(options, ctx);
+    case SUBCOMMAND.init:
+      return init(options, ctx);
     case SUBCOMMAND.explain:
       return explain(options, ctx, rest);
     default:
@@ -351,7 +388,7 @@ function dispatch(pi: ExtensionAPI, options: PermissionCommandOptions, ctx: Exte
 
 export function registerPermissionCommands(pi: ExtensionAPI, options: PermissionCommandOptions): void {
   pi.registerCommand(PERMISSIONS_COMMAND, {
-    description: "Show the effective permission policy (read-only)",
+    description: "Show the effective permission policy; init creates the project policy file",
     getArgumentCompletions: (prefix) => {
       if (/\s/.test(prefix)) return null;
       const names = [...Object.values(SUBCOMMAND), ...options.getAgents().map((agent) => agent.name)];

@@ -1,9 +1,10 @@
     {
         "version": 1,
         "agents": {
-            "implementer": {
+            "*": {
                 "bash": {
-                    "scripts/test-isolated.sh": "allow"
+                    "scripts/test-isolated.sh": "allow",
+                    "gh": "allow"
                 }
             }
         }

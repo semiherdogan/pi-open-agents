@@ -199,6 +199,8 @@ jobs:
         id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The upstream remote added below sorts first in gh's repo resolution; pin gh to this repository
+          GH_REPO: ${{ github.repository }}
           MERGE_RESULT: ${{ needs.merge.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           CONFLICT: ${{ needs.merge.outputs.conflict }}
@@ -277,7 +279,7 @@ jobs:
               echo "Then close this issue. Run: $RUN_URL"
             } > "$body_file"
 
-            issues_enabled="$(gh repo view --json hasIssuesEnabled --jq .hasIssuesEnabled)"
+            issues_enabled="$(gh repo view "$GH_REPO" --json hasIssuesEnabled --jq .hasIssuesEnabled)"
             if [ "$issues_enabled" != "true" ]; then
               echo "::notice::Issues are disabled on this repository; the report is in the job summary. Enable Issues (Settings > General > Features) to get it as an issue."
               {
