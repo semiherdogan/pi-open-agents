@@ -30,6 +30,7 @@ import { allowedAgentNames, isSubagentProcess, parentInheritedRules } from "./su
 import { registerPermissionGate } from "./permission/gate.ts";
 import { PolicyRuntime } from "./permission/policy-runtime.ts";
 import { registerPolicyGate } from "./permission/policy-gate.ts";
+import { createIncludeGuard } from "./permission/include-guard.ts";
 import { readPolicySnapshot } from "./permission/policy-snapshot.ts";
 import { createDelegationPlanner } from "./permission/delegation.ts";
 import { registerPermissionAwareness } from "./permission/awareness.ts";
@@ -96,6 +97,7 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
       cwd: ctx.cwd,
       agentDir: getAgentDir(),
       defaults: { thinking: settings.defaultThinkingLevel ?? "off" },
+      includeGuard: createIncludeGuard(policyRuntime, ctx.cwd),
     });
 
     // Log any parse warnings

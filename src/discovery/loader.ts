@@ -14,6 +14,7 @@ import type { DiscoveryPath } from "../config/paths.ts";
 import { deriveAgentName, getDiscoveryPaths } from "../config/paths.ts";
 import { parseAgentDefinition } from "../config/schema.ts";
 import { SCHEMA_DEFAULTS } from "../config/schema.ts";
+import type { IncludeGuard } from "../permission/include-guard.ts";
 
 // ─── Default Filesystem ──────────────────────────────────────────────────────
 
@@ -68,6 +69,8 @@ export interface LoadAgentsOptions {
   fs?: AgentFs;
   /** Custom discovery paths (overrides auto-detection). */
   paths?: DiscoveryPath[];
+  /** Fork hook: decides whether an include directive may read its file. */
+  includeGuard?: IncludeGuard;
 }
 
 // ─── Main Loader ─────────────────────────────────────────────────────────────
@@ -119,6 +122,7 @@ export async function loadAgents(options: LoadAgentsOptions = {}): Promise<Agent
           agent.prompt = await resolveIncludes(agent.prompt, path.dirname(filePath), {
             fs: fileSystem,
             reportedMissing: new Set(),
+            refuse: (resolved) => options.includeGuard?.(resolved, agent),
           }, new Set([path.resolve(filePath)]), 0);
 
           // Add to the appropriate map
@@ -181,6 +185,8 @@ interface IncludeContext {
   fs: AgentFs;
   /** Resolved paths already warned about (one warning per missing path). */
   reportedMissing: Set<string>;
+  /** Fork hook: reason to keep a directive literal, undefined to read the file. */
+  refuse: (resolved: string) => string | undefined;
 }
 
 function warnInclude(message: string): void {
@@ -247,6 +253,13 @@ async function resolveIncludes(
 
     if (depth >= INCLUDE_MAX_DEPTH) {
       warnInclude(`max depth ${INCLUDE_MAX_DEPTH} exceeded for "${includePath}"; keeping directive literal`);
+      out.push(line);
+      continue;
+    }
+
+    const refused = ctx.refuse(resolved);
+    if (refused !== undefined) {
+      warnInclude(`refused "${includePath}" (${resolved}): ${refused}; keeping directive literal`);
       out.push(line);
       continue;
     }

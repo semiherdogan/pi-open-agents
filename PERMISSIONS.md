@@ -185,6 +185,16 @@ Set `"gitWrite": false` only if the agent really must change the repository.
 
 Paths are checked both lexically and after resolving symlinks, case-insensitively. Deleting or moving a directory that contains one of the anchored protected locations is a hard deny too: the project's own `.git`, `.pi`, `.opencode` and `.agents`, the agent dir, or an `alwaysDeny.paths` entry (for example `rm -rf .` in the project root). A directory that merely contains some other nested `.pi` or `.git` (for example `rm -rf packages` with `packages/x/.git`) is not blocked, while writing into or deleting those nested directories directly is.
 
+### Agent include directives
+
+An `include: <path>` line in an agent's markdown inlines that file into the agent's prompt when agents load. That is a read without a tool call, so the gate never sees it. In strict mode an include is refused, and the directive line stays in the prompt as written with a warning on stderr, when:
+
+- the file is read-protected (`alwaysDeny.paths`, or `read` listed in `alwaysDeny.tools`), for global and project agents alike;
+- a project agent's include resolves outside the project (symlinks resolved); global agents are the user's own files and may include from anywhere else;
+- a policy file is invalid: the read-protected paths are unknown, so every include is refused.
+
+Includes are checked when agents load (session start), not again after a policy edit. Without a policy file they are not restricted.
+
 ## Delegation
 
 Each subagent call runs in one of two modes, chosen by the delegating agent's frontmatter, never by the model:
