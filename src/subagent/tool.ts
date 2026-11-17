@@ -34,7 +34,7 @@ import {
   type AgentResult,
   type SubagentSessionMode,
 } from "./executor.ts";
-import { trackLiveElapsed } from "./elapsed.ts";
+import { formatElapsed, trackLiveElapsed } from "./elapsed.ts";
 import {
   contextUsageSeverity,
   formatSubagentCall,
@@ -242,16 +242,19 @@ function styledToolTitle(name: string, args: Record<string, unknown>, theme: The
 }
 
 function styledCollapsedLine(
-  line: { kind: string; text: string; tool?: { name: string; args: Record<string, unknown>; status: string } },
+  line: { kind: string; text: string; severity?: ThemeColor; tool?: { name: string; args: Record<string, unknown>; status: string; durationMs?: number } },
   details: AgentResult | AgentProgress,
   theme: ThemeLike,
 ): string {
   if (line.kind === "status")
     return theme.fg(details.status === "error" ? "error" : "success", line.text);
+  if (line.kind === "timing") return theme.fg(line.severity ?? "dim", line.text);
   if (line.kind === "hint") return theme.fg("dim", line.text);
   if (line.kind === "tool" && line.tool) {
     const prefix = line.tool.status === "running" ? theme.fg("warning", "▸") : " ";
-    return `${prefix} ${styledToolTitle(line.tool.name, line.tool.args, theme)}`;
+    const duration =
+      line.tool.durationMs !== undefined ? theme.fg("dim", ` ${formatElapsed(line.tool.durationMs)}`) : "";
+    return `${prefix} ${styledToolTitle(line.tool.name, line.tool.args, theme)}${duration}`;
   }
   if (line.kind === "usage") return theme.fg(contextUsageSeverity(details.usage), line.text);
   return line.text;

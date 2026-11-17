@@ -25,6 +25,7 @@ import type { AgentDefinition } from "../types.ts";
 import { byteLength, keepTailByBytes, safeFilePart, truncateHeadContent } from "../utils/format.ts";
 import { buildSubagentPrompt } from "./prompt.ts";
 import { buildSubagentEnv, type SubagentEnvVars } from "./env.ts";
+import { createTimingTracker, type TimingSnapshot } from "./timing.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ export interface AgentProgress {
   elapsedMs: number;
   model?: string;
   session?: SubagentSessionInfo;
+  timing?: TimingSnapshot;
 }
 
 export interface AgentResult extends AgentProgress {
@@ -671,6 +673,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
   let stderr = "";
   let model = options.agent.model;
   let stdoutBuffer = "";
+  const timing = createTimingTracker(now);
 
   const progress = (status: AgentProgress["status"]): AgentProgress => ({
     agent: options.agent.name,
@@ -682,6 +685,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
     elapsedMs: now() - startedAt,
     model,
     session: options.session ?? { requested: "none", effective: "none" },
+    timing: timing.snapshot(),
   });
 
   const emit = (status: AgentProgress["status"] = "running") =>
@@ -813,6 +817,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
         return;
       }
 
+      const timingChanged = timing.handle(event);
+
       if (event.type === "tool_execution_start") {
         tools.push({
           id: String(event.toolCallId ?? tools.length),
@@ -864,7 +870,11 @@ export async function runSubagent(options: RunSubagentOptions): Promise<AgentRes
         if (aggregate) replaceUsage(usage, aggregate);
         model = lastAssistantModel(event.messages) ?? model;
         emit();
+        return;
       }
+
+      // Events without a branch above still move the phase (turn start, stream deltas, retries).
+      if (timingChanged) emit();
     };
 
     // ── Run the child process ──

@@ -11,6 +11,7 @@
 import type { AgentProgress, AgentResult } from "./executor.ts";
 import { numberArg, preview, shortenPath, stringArg, formatTokens } from "../utils/format.ts";
 import { formatElapsed, liveElapsedMs } from "./elapsed.ts";
+import { formatTimingLine, type TimingSeverity } from "./timing-format.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -23,16 +24,18 @@ export interface RenderOptions {
   live?: boolean;
 }
 
-export type ResultLineKind = "status" | "tool" | "hint" | "usage" | "output" | "blank";
+export type ResultLineKind = "status" | "timing" | "tool" | "hint" | "usage" | "output" | "blank";
 
 export interface ResultLine {
   text: string;
   kind: ResultLineKind;
   singleLine: boolean;
+  severity?: TimingSeverity;
   tool?: {
     name: string;
     args: Record<string, unknown>;
     status: "running" | "done" | "error";
+    durationMs?: number;
   };
 }
 
@@ -167,11 +170,18 @@ function formatToolLineItems(
   }
 
   for (const tool of visibleTools) {
+    const durationMs = progress.timing?.toolMs[tool.id];
+    const duration = durationMs !== undefined ? ` ${formatElapsed(durationMs)}` : "";
     lines.push({
-      text: `${tool.status === "running" ? "▸" : " "} ${formatToolTitle(tool.name, tool.args)}`,
+      text: `${tool.status === "running" ? "▸" : " "} ${formatToolTitle(tool.name, tool.args)}${duration}`,
       kind: "tool",
       singleLine: true,
-      tool: { name: tool.name, args: tool.args, status: tool.status },
+      tool: {
+        name: tool.name,
+        args: tool.args,
+        status: tool.status,
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      },
     });
     if ((options.expanded || progress.status === "running") && tool.nested) {
       for (const line of formatResultLines(tool.nested, {
@@ -206,10 +216,14 @@ export function formatResultLines(
   const statusLine = `${icon} ${progress.agent}${sessionBadge}${progress.model ? ` (${progress.model})` : ""} — ${progress.tools.length} tools · ${formatElapsed(elapsedMs)}`;
   const toolLines = formatToolLineItems(progress, options);
   const usage = formatUsage(progress);
+  const timing = formatTimingLine(progress, options);
 
   const lines: ResultLine[] = [
     { text: "", kind: "blank", singleLine: false },
     { text: statusLine, kind: "status", singleLine: false },
+    ...(timing
+      ? [{ text: `  ${timing.text}`, kind: "timing" as const, singleLine: true, severity: timing.severity }]
+      : []),
     ...(progress.session?.warning
       ? [{ text: `session: ${progress.session.warning}`, kind: "hint" as const, singleLine: true }]
       : []),

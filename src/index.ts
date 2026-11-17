@@ -22,6 +22,7 @@ import type { AgentDefinition, ThinkingLevel } from "./types.ts";
 import { loadAgents, selectableAgents, spawnableAgents } from "./discovery/loader.ts";
 import { AgentManager } from "./primary/manager.ts";
 import { refreshAgentTools, buildSystemPrompt, buildSubagentGuidance } from "./primary/executor.ts";
+import { registerActivityStatus } from "./primary/activity.ts";
 import { setShowAgentDescription, updateBanner } from "./tui/banner.ts";
 import { registerTuiControls } from "./tui/selector.ts";
 import { registerAgentTools } from "./tui/tools.ts";
@@ -84,6 +85,9 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
     description: "Default agent to use at startup",
     type: "string",
   });
+
+  // Subagent children have no footer; the parent renders their phase in the tool row.
+  if (!isSubagentProcess(process.env)) registerActivityStatus(pi);
 
   // ── Session Start: Load agents and apply default ───────────────────────────
 
