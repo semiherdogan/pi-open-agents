@@ -36,6 +36,7 @@ import { readPolicySnapshot } from "./permission/policy-snapshot.ts";
 import { createDelegationPlanner } from "./permission/delegation.ts";
 import { registerPermissionAwareness } from "./permission/awareness.ts";
 import { registerPermissionCommands } from "./permission/commands.ts";
+import { registerProfiles } from "./profile/runtime.ts";
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
       ctx.ui.notify(`Agent parse warning: ${w.filePath}: ${w.message}`, "warning");
     }
 
+    profiles.startSession(ctx, result.agents);
     manager.setAgents(result.agents);
 
     // Register TUI controls + tools + subagent tool
@@ -282,6 +284,16 @@ export default function piOpenAgents(pi: ExtensionAPI): void {
       pi.appendEntry("open-agents-state", { name: manager.getActiveName() });
       manager.markPersisted();
     }
+  });
+
+  // Registered last so its session_start handler runs after the one above,
+  // which loads and restores the agents it binds.
+  const profiles = registerProfiles(pi, {
+    agentDir: getAgentDir(),
+    env: process.env,
+    isSubagent: isSubagentProcess(process.env),
+    getActiveAgent: () => manager.getActive(),
+    getAgents: () => manager.getAgents(),
   });
 }
 

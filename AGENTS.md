@@ -8,6 +8,7 @@
   - Never rename or restructure upstream files.
 - Permission-policy work lives in `src/permission/` (`loader.ts`, `resolver.ts`, more to come) with tests in `test/permission-*.test.ts`.
 - The permission policy design (formats, precedence, delegation, limitations) is documented in `PERMISSIONS.md`.
+- Profile work lives in `src/profile/` with tests in `test/profile-*.test.ts`; the design is documented in `PROFILES.md`.
 - Do not use the em dash character in code, comments, or docs.
 
 ## Upstream sync
